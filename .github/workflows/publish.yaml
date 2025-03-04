@@ -169,10 +169,12 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install
+      - name: Create npm dirs
+        run: cd bindings && bun napi create-npm-dirs
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: bindings/artifacts
       - name: Move artifacts
         run: cd bindings && bun artifacts
       - name: List packages
