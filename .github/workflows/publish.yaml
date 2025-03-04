@@ -107,14 +107,14 @@ jobs:
         if: matrix.settings.target != 'wasm32-wasi-preview1-threads'
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: 'bindings/dist/*.node'
+          path: 'bindings/*.node'
           if-no-files-found: error
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: matrix.settings.target == 'wasm32-wasi-preview1-threads'
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: 'bindings/dist/*.wasm'
+          path: 'bindings/*.wasm'
           if-no-files-found: error
   universal-macOS:
     name: Build universal macOS binary
