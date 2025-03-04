@@ -1,0 +1,28 @@
+[package]
+name = "n-flashthing"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+chrono = "0.4.40"
+flashthing = { path = "../lib" }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dependencies.napi]
+version = "3.0.0-alpha.31"
+default-features = false
+# see https://nodejs.org/api/n-api.html#node-api-version-matrix
+features = ["napi4", "async"]
+
+[dependencies.napi-derive]
+version = "3.0.0-alpha.28"
+features = ["type-def"]
+
+[build-dependencies]
+napi-build = "2"
