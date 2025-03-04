@@ -1,4 +1,4 @@
-name: CI
+name: Publish
 env:
   DEBUG: napi:*
   MACOSX_DEPLOYMENT_TARGET: '10.13'
