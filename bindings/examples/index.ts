@@ -1,4 +1,4 @@
-import { FlashThing, type FlashEvent } from '../dist';
+import { FlashThing, type FlashEvent } from '../';
 
 const archivePath = process.argv[2];
 if (!archivePath) {
