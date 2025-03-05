@@ -20,15 +20,23 @@ struct Args {
   /// Whether to unbrick the device.
   #[arg(long, action)]
   unbrick: bool,
+  /// setup host - generate udev rules for Linux or install drivers for Windows
+  #[arg(long, action)]
+  setup: bool,
 }
 
 fn main() {
   monitoring::init_logger();
 
   let args = Args::parse();
-  let path = args
-    .path
-    .unwrap_or_else(|| env::current_dir().expect("could not determine current directory"));
+  if args.setup {
+    tracing::info!("setting up host...");
+    match flashthing::AmlogicSoC::host_setup() {
+      Ok(()) => tracing::info!("host set up successfully"),
+      Err(err) => tracing::error!("failed to set up host: {}", err),
+    }
+    return;
+  }
 
   if args.unbrick {
     tracing::info!("unbricking device...");
@@ -44,6 +52,10 @@ fn main() {
 
     return;
   }
+
+  let path = args
+    .path
+    .unwrap_or_else(|| env::current_dir().expect("could not determine current directory"));
 
   match flash(path, args.stock) {
     Ok(()) => tracing::info!("done!"),

@@ -14,6 +14,9 @@ serde_with = "3.12.0"
 zip = "2.2.2"
 lazy_static = "1.5.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+whoami = "2.0.0-pre.1"
+
 [features]
 default = []
 instrument = []

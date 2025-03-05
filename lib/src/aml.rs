@@ -1106,6 +1106,14 @@ impl AmlogicSoC {
     tracing::info!("unbrick procedure completed successfully!");
     Ok(())
   }
+
+  /// Set up host environment for USB access
+  pub fn host_setup() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    crate::setup::setup_host_linux()?;
+
+    Ok(())
+  }
 }
 
 impl Drop for AmlogicSoC {

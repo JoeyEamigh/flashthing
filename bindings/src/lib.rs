@@ -139,6 +139,15 @@ impl FlashThing {
       Err(e) => Err(Error::from_reason(format!("Failed to initialize device: {}", e))),
     }
   }
+
+  /// Generate udev rules for Linux systems
+  #[napi]
+  pub fn host_setup(&self) -> Result<()> {
+    match flashthing::AmlogicSoC::host_setup() {
+      Ok(()) => Ok(()),
+      Err(e) => Err(Error::from_reason(format!("Failed to set up host: {}", e))),
+    }
+  }
 }
 
 fn create_callback(callback: Function<FlashEvent>) -> Result<(Arc<FlashCallback>, FlasherCallbackHandler)> {

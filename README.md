@@ -31,6 +31,24 @@ pnpm add flashthing
 bun add flashthing
 ```
 
+### Platform Specific Notes
+
+#### Linux
+
+FlashThing requires `libusb` to be installed, and a udev rule must be set up to access the Car Thing. To install the udev rule, run the following command:
+
+```bash
+sudo flashthing-cli --udev
+```
+
+#### macOS
+
+FlashThing requires `libusb` to be installed. You can install it using [Homebrew](https://brew.sh/):
+
+```bash
+brew install libusb
+```
+
 ## Usage
 
 <!-- ### Rust Crate Usage

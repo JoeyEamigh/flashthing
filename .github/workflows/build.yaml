@@ -1,0 +1,107 @@
+name: Build CLI Binaries
+
+permissions:
+  contents: write
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: flashthing-cli.exe
+            artifact_name: flashthing-cli-windows-x86_64.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            binary_name: flashthing-cli.exe
+            artifact_name: flashthing-cli-windows-aarch64.exe
+
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: flashthing-cli
+            artifact_name: flashthing-cli-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: flashthing-cli
+            artifact_name: flashthing-cli-linux-aarch64
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: flashthing-cli
+            artifact_name: flashthing-cli-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: flashthing-cli
+            artifact_name: flashthing-cli-macos-aarch64
+
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
+
+      - name: Setup cross-compilation for Linux aarch64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build with cross
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cross build --release --target ${{ matrix.target }} -p flashthing-cli
+
+      - name: Build with cargo
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: cargo build --release --target ${{ matrix.target }} -p flashthing-cli
+
+      - name: Prepare binary
+        run: |
+          mkdir -p release-binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "release-binaries/${{ matrix.artifact_name }}"
+          else
+            cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "release-binaries/${{ matrix.artifact_name }}"
+            chmod +x "release-binaries/${{ matrix.artifact_name }}"
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release-binaries/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  attach-to-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./artifacts/**/*
+          fail_on_unmatched_files: false

@@ -1,6 +1,7 @@
 mod aml;
 mod flash;
 mod partitions;
+mod setup;
 
 pub mod config;
 
@@ -76,6 +77,8 @@ const STOCK_META: &[u8] = include_bytes!("../resources/stock-meta.json");
 
 const VENDOR_ID: u16 = 0x1b8e;
 const PRODUCT_ID: u16 = 0xc003;
+const VENDOR_ID_BOOTED: u16 = 0x1d6b;
+const PRODUCT_ID_BOOTED: u16 = 0x1014;
 
 const ADDR_BL2: u32 = 0xfffa0000;
 const TRANSFER_SIZE_THRESHOLD: usize = 8 * 1024 * 1024;
