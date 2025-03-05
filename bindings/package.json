@@ -1,6 +1,6 @@
 {
   "name": "flashthing",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "N-API bindings for flashthing (flash the Spotify Car Thing)",
   "author": "Joey Eamigh <55670930+JoeyEamigh@users.noreply.github.com>",
   "homepage": "https://github.com/JoeyEamigh/flashthing",

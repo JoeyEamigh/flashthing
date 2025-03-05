@@ -1,4 +1,4 @@
-name: Publish N-API Bindings
+name: Publish Crates and NPM Packages
 env:
   DEBUG: napi:*
   MACOSX_DEPLOYMENT_TARGET: '10.13'
@@ -189,3 +189,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Install dependencies (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
+      - name: Login to crates.io
+        run: cargo login ${{ secrets.CRATES_TOKEN }}
+      - name: Copy README.md && LICENSE
+        run: |
+          cp README.md lib
+          cp README.md cli
+          cp LICENSE lib
+          cp LICENSE cli
+      - name: Publish flashthing library
+        run: cargo publish --manifest-path lib/Cargo.toml --allow-dirty
+      - name: Wait between publishes (dependency)
+        run: sleep 30
+      - name: Publish flashthing-cli
+        run: cargo publish --manifest-path cli/Cargo.toml --allow-dirty

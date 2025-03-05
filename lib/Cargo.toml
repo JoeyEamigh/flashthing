@@ -1,7 +1,14 @@
 [package]
 name = "flashthing"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
+description = "tool for flashing your Spotify Car Thing"
+repository = "https://github.com/JoeyEamigh/flashthing.git"
+documentation = "https://github.com/JoeyEamigh/flashthing"
+homepage = "https://github.com/JoeyEamigh/flashthing"
+keywords = ["spotify", "car-thing", "flashthing"]
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
 tracing = { workspace = true }

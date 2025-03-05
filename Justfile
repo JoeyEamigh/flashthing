@@ -14,3 +14,6 @@ binding-example:
 
 tokei:
   tokei -t Rust,TypeScript,TSX
+
+version:
+  ./scripts/set-versions.sh
