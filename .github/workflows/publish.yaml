@@ -1,4 +1,4 @@
-name: Publish
+name: Publish N-API Bindings
 env:
   DEBUG: napi:*
   MACOSX_DEPLOYMENT_TARGET: '10.13'

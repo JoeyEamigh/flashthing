@@ -77,7 +77,10 @@ const STOCK_META: &[u8] = include_bytes!("../resources/stock-meta.json");
 
 const VENDOR_ID: u16 = 0x1b8e;
 const PRODUCT_ID: u16 = 0xc003;
+
+#[allow(dead_code)]
 const VENDOR_ID_BOOTED: u16 = 0x1d6b;
+#[allow(dead_code)]
 const PRODUCT_ID_BOOTED: u16 = 0x1014;
 
 const ADDR_BL2: u32 = 0xfffa0000;

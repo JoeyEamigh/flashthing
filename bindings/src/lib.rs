@@ -140,7 +140,7 @@ impl FlashThing {
     }
   }
 
-  /// Generate udev rules for Linux systems
+  /// Set up host for flashing (this currently only does anything on Linux)
   #[napi]
   pub fn host_setup(&self) -> Result<()> {
     match flashthing::AmlogicSoC::host_setup() {

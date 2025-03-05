@@ -20,7 +20,7 @@ struct Args {
   /// Whether to unbrick the device.
   #[arg(long, action)]
   unbrick: bool,
-  /// setup host - generate udev rules for Linux or install drivers for Windows
+  /// setup host - this currently only sets up udev rules on Linux
   #[arg(long, action)]
   setup: bool,
 }

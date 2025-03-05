@@ -1,9 +1,8 @@
-use std::{fs, path::PathBuf, process::Command};
-
-use crate::{Result, PRODUCT_ID, PRODUCT_ID_BOOTED, VENDOR_ID, VENDOR_ID_BOOTED};
-
 #[cfg(target_os = "linux")]
-pub fn setup_host_linux() -> Result<()> {
+pub fn setup_host_linux() -> crate::Result<()> {
+  use crate::{PRODUCT_ID, PRODUCT_ID_BOOTED, VENDOR_ID, VENDOR_ID_BOOTED};
+  use std::{fs, path::PathBuf, process::Command};
+
   let rules_path = PathBuf::from("/etc/udev/rules.d/98-superbird.rules");
 
   let username = whoami::username()?;
