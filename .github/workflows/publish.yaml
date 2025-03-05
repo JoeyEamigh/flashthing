@@ -205,12 +205,10 @@ jobs:
       - name: Copy README.md && LICENSE
         run: |
           cp README.md lib
-          cp README.md cli
           cp LICENSE lib
+          cp README.md cli
           cp LICENSE cli
       - name: Publish flashthing library
         run: cargo publish --manifest-path lib/Cargo.toml --allow-dirty
-      - name: Wait between publishes (dependency)
-        run: sleep 30
       - name: Publish flashthing-cli
         run: cargo publish --manifest-path cli/Cargo.toml --allow-dirty
