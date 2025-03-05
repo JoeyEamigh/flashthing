@@ -49,6 +49,14 @@ FlashThing requires `libusb` to be installed. You can install it using [Homebrew
 brew install libusb
 ```
 
+#### Windows
+
+FlashThing may require special drivers (I don't have a Windows machine to test on). If you have issues, try running the [Terbium driver script](https://driver.terbium.app/get).
+
+```powershell
+irm https://driver.terbium.app/get | iex
+```
+
 ## Usage
 
 ### Rust Crate Usage
