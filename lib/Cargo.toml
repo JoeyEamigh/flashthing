@@ -1,6 +1,6 @@
 [package]
 name = "flashthing"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2021"
 description = "tool for flashing your Spotify Car Thing"
 repository = "https://github.com/JoeyEamigh/flashthing.git"

@@ -6,11 +6,11 @@ FlashThing is a tool for quickly and easily flashing the Spotify Car Thing (Supe
 - **FlashThing CLI**: Command line interface for FlashThing.
 - **FlashThing Node**: N-API bindings for FlashThing.
 
-FlashThing currently supports flashing the Stock partition tables as well as custom partition tables using a subset of the Terbium `meta.json` standard.
+FlashThing currently supports flashing the Stock partition tables as well as custom partition tables using a subset of the Terbium `meta.json` standard. Read more about that standard in the [docs](./docs/meta.md).
 
 ## Installation
 
-<!-- ### Rust Crate
+### Rust Crate
 
 ```bash
 cargo add flashthing
@@ -20,7 +20,7 @@ cargo add flashthing
 
 ```bash
 cargo install flashthing-cli
-``` -->
+```
 
 ### Node Module Installation
 
@@ -51,9 +51,11 @@ brew install libusb
 
 ## Usage
 
-<!-- ### Rust Crate Usage
+### Rust Crate Usage
 
-See [docs.rs](https://docs.rs/flashthing/latest/flashthing/) and the [cli](./cli) for more information. -->
+See [docs.rs](https://docs.rs/flashthing/latest/flashthing/) and the [cli](./cli) for more information.
+
+Note: The documentation is very basic, sorry!
 
 ### CLI Usage
 
@@ -69,6 +71,7 @@ Arguments:
 Options:
   -s, --stock    Whether the directory or archive contains a stock dump with no `meta.json` file
       --unbrick  Whether to unbrick the device
+      --setup    setup host - this currently only sets up udev rules on Linux
   -h, --help     Print help
   -V, --version  Print version
 ```

@@ -3,7 +3,7 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 
-/// Information about a partition
+/// Information about a partition on the device
 #[derive(Debug, Clone)]
 pub struct PartitionInfo {
   /// Offset in bytes

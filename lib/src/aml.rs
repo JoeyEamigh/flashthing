@@ -19,12 +19,26 @@ struct AmlInner {
   endpoint_out: u8,
 }
 
+/// The main interface for interacting with Amlogic-based hardware
+///
+/// This provides low-level access to the Amlogic SoC on the Superbird device,
+/// allowing for memory operations, partition management, and firmware flashing.
 #[derive(Clone)]
 pub struct AmlogicSoC {
   inner: Arc<AmlInner>,
 }
 
 impl AmlogicSoC {
+  /// Initialize a connection to an Amlogic SoC device
+  ///
+  /// This will search for a connected device, put it in the correct mode if necessary,
+  /// and establish a connection for flashing operations.
+  ///
+  /// # Parameters
+  /// - `callback`: Optional callback function to receive status updates
+  ///
+  /// # Returns
+  /// - `Result<Self>`: A connected AmlogicSoC instance or an error
   pub fn init(callback: Option<Callback>) -> Result<Self> {
     if let Some(callback) = &callback {
       callback(Event::FindingDevice);
@@ -142,6 +156,17 @@ impl AmlogicSoC {
     })
   }
 
+  /// Write data to device memory
+  ///
+  /// This writes a small amount of data (up to 64 bytes) to device memory.
+  /// For larger transfers, use `write_large_memory` instead.
+  ///
+  /// # Parameters
+  /// - `address`: The memory address to write to
+  /// - `data`: The data to write, must be <= 64 bytes
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn write_simple_memory(&self, address: u32, data: &[u8]) -> Result<()> {
     tracing::debug!(
@@ -165,6 +190,16 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Write arbitrary size data to device memory
+  ///
+  /// This breaks down larger transfers into multiple write_simple_memory operations.
+  ///
+  /// # Parameters
+  /// - `address`: The memory address to write to
+  /// - `data`: The data to write
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn write_memory(&self, address: u32, data: &[u8]) -> Result<()> {
     tracing::debug!(
@@ -187,6 +222,17 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Read a small amount of data from device memory
+  ///
+  /// This reads up to 64 bytes from device memory.
+  /// For larger transfers, use `read_memory` instead.
+  ///
+  /// # Parameters
+  /// - `address`: The memory address to read from
+  /// - `length`: The number of bytes to read (must be <= 64)
+  ///
+  /// # Returns
+  /// - `Result<Vec<u8>>`: The read data or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn read_simple_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
     tracing::debug!(
@@ -218,6 +264,16 @@ impl AmlogicSoC {
     Ok(buf)
   }
 
+  /// Read arbitrary size data from device memory
+  ///
+  /// This breaks down larger transfers into multiple read_simple_memory operations.
+  ///
+  /// # Parameters
+  /// - `address`: The memory address to read from
+  /// - `length`: The number of bytes to read
+  ///
+  /// # Returns
+  /// - `Result<Vec<u8>>`: The read data or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn read_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
     tracing::debug!("reading memory at address: {:#X} with length: {}", address, length);
@@ -237,6 +293,14 @@ impl AmlogicSoC {
     Ok(data)
   }
 
+  /// Execute code at the specified memory address
+  ///
+  /// # Parameters
+  /// - `address`: The memory address to execute code from
+  /// - `keep_power`: Whether to keep power on after execution
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn run(&self, address: u32, keep_power: Option<bool>) -> Result<()> {
     let keep_power = keep_power.unwrap_or(true);
@@ -257,6 +321,10 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Identify the device
+  ///
+  /// # Returns
+  /// - `Result<String>`: The device identification string or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn identify(&self) -> Result<String> {
     tracing::debug!("identifying device");
@@ -272,6 +340,18 @@ impl AmlogicSoC {
     Ok(String::from_utf8(buf.to_vec())?)
   }
 
+  /// Write large blocks of data to device memory
+  ///
+  /// This is used for writing firmware images and other large data blocks.
+  ///
+  /// # Parameters
+  /// - `memory_address`: The memory address to write to
+  /// - `data`: The data to write
+  /// - `block_length`: The size of each block to transfer
+  /// - `append_zeros`: Whether to pad data with zeros to match block_length
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn write_large_memory(
     &self,
@@ -336,6 +416,18 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Write large blocks of data directly to a disk address with progress tracking
+  ///
+  /// # Parameters
+  /// - `disk_address`: The disk address to write to
+  /// - `reader`: A reader providing the data to write
+  /// - `data_size`: The total size of data to write
+  /// - `block_length`: The size of each block to transfer
+  /// - `append_zeros`: Whether to pad data with zeros to match block_length
+  /// - `progress_callback`: Function to call with progress updates
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn write_large_memory_to_disk<R: std::io::Read, F: Fn(FlashProgress)>(
     &self,
@@ -693,6 +785,16 @@ impl AmlogicSoC {
     Ok(checksum)
   }
 
+  /// Execute the BL2 boot sequence
+  ///
+  /// This boots the device using the specified BL2 and bootloader binaries.
+  ///
+  /// # Parameters
+  /// - `bl2`: Optional BL2 binary data (uses built-in if None)
+  /// - `bootloader`: Optional bootloader binary data (uses built-in if None)
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn bl2_boot(&self, bl2: Option<&[u8]>, bootloader: Option<&[u8]>) -> Result<()> {
     let bl2 = bl2.unwrap_or(BL2_BIN);
@@ -773,6 +875,13 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Send a bulk command to the device
+  ///
+  /// # Parameters
+  /// - `command`: The command string to send
+  ///
+  /// # Returns
+  /// - `Result<String>`: The command response or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn bulkcmd(&self, command: &str) -> Result<String> {
     tracing::debug!("sending bulk command: {:?}", command);
@@ -808,6 +917,14 @@ impl AmlogicSoC {
     Ok(response)
   }
 
+  /// Validate the size of a partition
+  ///
+  /// # Parameters
+  /// - `part_name`: The name of the partition
+  /// - `part_info`: Partition information
+  ///
+  /// # Returns
+  /// - `Result<usize>`: The validated partition size or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn validate_partition_size(&self, part_name: &str, part_info: &PartitionInfo) -> Result<usize> {
     tracing::debug!("validating partition size for partition: {}", part_name);
@@ -917,6 +1034,17 @@ impl AmlogicSoC {
     }
   }
 
+  /// Restore a partition from a data source
+  ///
+  /// # Parameters
+  /// - `part_name`: The name of the partition to restore
+  /// - `part_size`: The size of the partition
+  /// - `reader`: A reader providing the partition data
+  /// - `file_size`: The size of the data being read
+  /// - `progress_callback`: Function to call with progress updates
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn restore_partition<R: Read, F: Fn(FlashProgress)>(
     &self,
@@ -1069,6 +1197,12 @@ impl AmlogicSoC {
     Ok(())
   }
 
+  /// Execute the unbrick procedure
+  ///
+  /// This writes the emergency unbrick image to the device.
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn unbrick(&self) -> Result<()> {
     tracing::info!("starting unbrick procedure...");
@@ -1107,7 +1241,12 @@ impl AmlogicSoC {
     Ok(())
   }
 
-  /// Set up host environment for USB access
+  /// Set up the host environment for USB access
+  ///
+  /// On Linux, this creates udev rules to allow access to the device.
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   pub fn host_setup() -> Result<()> {
     #[cfg(target_os = "linux")]
     crate::setup::setup_host_linux()?;
@@ -1125,11 +1264,19 @@ impl Drop for AmlogicSoC {
   }
 }
 
+/// The current mode of the Superbird device
+///
+/// The device can be in different modes depending on how it was powered on
+/// and what stage of the boot process it's in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeviceMode {
+  /// Normal operating mode (running regular firmware)
   Normal,
+  /// USB mode (entered by holding buttons 1 & 4 during power-on)
   Usb,
+  /// USB Burn mode (ready for flashing operations)
   UsbBurn,
+  /// Device not detected
   NotFound,
 }
 

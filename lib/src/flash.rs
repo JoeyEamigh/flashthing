@@ -17,28 +17,46 @@ use crate::{
   AmlogicSoC, Callback, Error, Event, Result, ADDR_TMP, TRANSFER_BLOCK_SIZE,
 };
 
+/// Type alias for zip archive reading from a file
 pub type Zip = ZipArchive<BufReader<File>>;
 
+/// The mode of operation for the Flasher
+///
+/// This determines how the flasher accesses flash files - from a standalone
+/// JSON string, a directory, or a ZIP archive.
 #[derive(Debug)]
 pub enum FlashMode {
-  /// string is a json string in `meta.json` format
+  /// Using a standalone JSON string as configuration
   Standalone,
-  /// path to a directory with a `meta.json` inside
+  /// Using files from a directory
   Directory(PathBuf),
-  /// path to a zip archive with a `meta.json` at the top level
+  /// Using files from a ZIP archive
   Archive(ZipArchive<BufReader<File>>),
 }
 
+/// Progress information for flashing operations
+///
+/// This provides detailed metrics about an ongoing flash operation.
 #[derive(Debug, Clone)]
 pub struct FlashProgress {
+  /// Percent complete (0-100)
   pub percent: f64,
-  pub elapsed: f64,        // in ms
-  pub eta: f64,            // in ms
-  pub rate: f64,           // in kib/s
-  pub avg_chunk_time: f64, // in ms
-  pub avg_rate: f64,       // in kib/s
+  /// Time elapsed in milliseconds
+  pub elapsed: f64,
+  /// Estimated time remaining in milliseconds
+  pub eta: f64,
+  /// Current transfer rate in KiB/s
+  pub rate: f64,
+  /// Average time per chunk in milliseconds
+  pub avg_chunk_time: f64,
+  /// Average transfer rate in KiB/s
+  pub avg_rate: f64,
 }
 
+/// The main interface for flashing firmware to a Superbird device
+///
+/// This provides high-level operations for loading and flashing firmware
+/// based on a configuration file.
 pub struct Flasher {
   aml: AmlogicSoC,
   mode: FlashMode,
@@ -49,7 +67,12 @@ pub struct Flasher {
 }
 
 impl Flasher {
-  /// Flash the Car Thing based on steps defined in `meta.json`
+  /// Execute the flash process based on the loaded configuration
+  ///
+  /// This will run through all steps defined in the flash configuration.
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
   pub fn flash(&mut self) -> Result<()> {
     tracing::info!("beginning flashing process!");
 
@@ -569,6 +592,9 @@ fn handle_data_or_file_stream<'a>(
   }
 }
 
+/// Result of a flash step execution
+///
+/// This represents the outcome of executing a single flash step.
 #[derive(Debug)]
 #[allow(dead_code)] // this is for if i decide to support handing control back or variables
 pub enum FlashOutcome {

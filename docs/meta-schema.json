@@ -1,0 +1,305 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Superbird Flash Configuration",
+  "description": "Schema for Superbird firmware flashing configuration files",
+  "type": "object",
+  "required": ["name", "version", "description", "steps", "metadataVersion"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Name of the firmware configuration"
+    },
+    "version": {
+      "type": "string",
+      "description": "Version of the firmware configuration"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the firmware configuration"
+    },
+    "steps": {
+      "type": "array",
+      "description": "An array of steps to execute during flashing",
+      "items": {
+        "type": "object",
+        "oneOf": [
+          { "$ref": "#/definitions/identifyStep" },
+          { "$ref": "#/definitions/bulkcmdStep" },
+          { "$ref": "#/definitions/bulkcmdStatStep" },
+          { "$ref": "#/definitions/runStep" },
+          { "$ref": "#/definitions/writeSimpleMemoryStep" },
+          { "$ref": "#/definitions/writeLargeMemoryStep" },
+          { "$ref": "#/definitions/readSimpleMemoryStep" },
+          { "$ref": "#/definitions/readLargeMemoryStep" },
+          { "$ref": "#/definitions/getBootAMLCStep" },
+          { "$ref": "#/definitions/writeAMLCDataStep" },
+          { "$ref": "#/definitions/bl2BootStep" },
+          { "$ref": "#/definitions/validatePartitionSizeStep" },
+          { "$ref": "#/definitions/restorePartitionStep" },
+          { "$ref": "#/definitions/writeEnvStep" },
+          { "$ref": "#/definitions/logStep" },
+          { "$ref": "#/definitions/waitStep" }
+        ]
+      }
+    },
+    "variables": {
+      "type": "object",
+      "description": "Variables to store data between steps",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "metadataVersion": {
+      "type": "integer",
+      "description": "Version of the metadata format",
+      "enum": [1]
+    }
+  },
+  "definitions": {
+    "identifyStep": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["identify"] },
+        "variable": { "type": "string" }
+      }
+    },
+    "bulkcmdStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["bulkcmd"] },
+        "value": { "type": "string" }
+      }
+    },
+    "bulkcmdStatStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["bulkcmdStat"] },
+        "value": { "type": "string" },
+        "variable": { "type": "string" }
+      }
+    },
+    "runStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["run"] },
+        "value": {
+          "type": "object",
+          "required": ["address"],
+          "properties": {
+            "address": { "type": "integer" },
+            "keepPower": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "writeSimpleMemoryStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["writeSimpleMemory"] },
+        "value": {
+          "type": "object",
+          "required": ["address", "data"],
+          "properties": {
+            "address": { "type": "integer" },
+            "data": { "$ref": "#/definitions/dataOrFile" }
+          }
+        }
+      }
+    },
+    "writeLargeMemoryStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["writeLargeMemory"] },
+        "value": {
+          "type": "object",
+          "required": ["address", "data", "blockLength"],
+          "properties": {
+            "address": { "type": "integer" },
+            "data": { "$ref": "#/definitions/dataOrFile" },
+            "blockLength": { "type": "integer" },
+            "appendZeros": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "readSimpleMemoryStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["readSimpleMemory"] },
+        "value": {
+          "type": "object",
+          "required": ["address", "length"],
+          "properties": {
+            "address": { "type": "integer" },
+            "length": { "type": "integer" }
+          }
+        },
+        "variable": { "type": "string" }
+      }
+    },
+    "readLargeMemoryStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["readLargeMemory"] },
+        "value": {
+          "type": "object",
+          "required": ["address", "length"],
+          "properties": {
+            "address": { "type": "integer" },
+            "length": { "type": "integer" }
+          }
+        },
+        "variable": { "type": "string" }
+      }
+    },
+    "getBootAMLCStep": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["getBootAMLC"] },
+        "variable": { "type": "string" }
+      }
+    },
+    "writeAMLCDataStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["writeAMLCData"] },
+        "value": {
+          "type": "object",
+          "required": ["seq", "amlcOffset", "data"],
+          "properties": {
+            "seq": { "type": "integer" },
+            "amlcOffset": { "type": "integer" },
+            "data": { "$ref": "#/definitions/dataOrFile" }
+          }
+        }
+      }
+    },
+    "bl2BootStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["bl2Boot"] },
+        "value": {
+          "type": "object",
+          "required": ["bl2", "bootloader"],
+          "properties": {
+            "bl2": { "$ref": "#/definitions/dataOrFile" },
+            "bootloader": { "$ref": "#/definitions/dataOrFile" }
+          }
+        }
+      }
+    },
+    "validatePartitionSizeStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["validatePartitionSize"] },
+        "value": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" }
+          }
+        },
+        "variable": { "type": "string" }
+      }
+    },
+    "restorePartitionStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["restorePartition"] },
+        "value": {
+          "type": "object",
+          "required": ["name", "data"],
+          "properties": {
+            "name": { "type": "string" },
+            "data": { "$ref": "#/definitions/dataOrFile" }
+          }
+        }
+      }
+    },
+    "writeEnvStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["writeEnv"] },
+        "value": { "$ref": "#/definitions/stringOrFile" }
+      }
+    },
+    "logStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["log"] },
+        "value": { "type": "string" }
+      }
+    },
+    "waitStep": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["wait"] },
+        "value": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "message"],
+              "properties": {
+                "type": { "enum": ["userInput"] },
+                "message": { "type": "string" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["type", "time"],
+              "properties": {
+                "type": { "enum": ["time"] },
+                "time": { "type": "integer" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "dataOrFile": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        {
+          "type": "object",
+          "required": ["filePath"],
+          "properties": {
+            "filePath": { "type": "string" },
+            "encoding": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "stringOrFile": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["filePath"],
+          "properties": {
+            "filePath": { "type": "string" },
+            "encoding": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

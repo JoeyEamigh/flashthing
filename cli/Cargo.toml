@@ -1,6 +1,6 @@
 [package]
 name = "flashthing-cli"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2021"
 description = "cli for flashthing"
 repository = "https://github.com/JoeyEamigh/flashthing.git"

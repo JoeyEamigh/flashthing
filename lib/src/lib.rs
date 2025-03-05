@@ -1,8 +1,71 @@
+//! # flashthing
+//!
+//! A Rust library for flashing custom firmware to the Spotify Car Thing device.
+//!
+//! This library provides a comprehensive toolset for interacting with the Amlogic
+//! SoC on the Spotify Car Thing, allowing users to flash custom firmware, read/write
+//! partitions, and execute other low-level operations on the device.
+//!
+//! ## Main Features
+//!
+//! - Device detection and mode switching
+//! - Memory reading and writing
+//! - Partition management and restoration
+//! - Custom firmware flashing via JSON configuration
+//! - Progress reporting and event callbacks
+//! - Error handling and recovery (including unbricking)
+//!
+//! ## Usage Example
+//!
+//! ```no_run
+//! use flashthing::{AmlogicSoC, Flasher, Event};
+//! use std::{path::PathBuf, sync::Arc};
+//!
+//! // Set up USB access for the device (on Linux, but no-op for other OSes so fine to call)
+//! AmlogicSoC::host_setup().unwrap();
+//!
+//! // Create a callback to handle events
+//! let callback = Arc::new(|event: Event| {
+//!     match event {
+//!         Event::FlashProgress(progress) => {
+//!             println!("Progress: {:.1}%, ETA: {:.1}s", progress.percent, progress.eta / 1000.0);
+//!         },
+//!         Event::Step(step_index, step) => {
+//!             println!("Step {}: {:?}", step_index, step);
+//!         },
+//!         Event::DeviceMode(mode) => {
+//!             println!("Device mode: {:?}", mode);
+//!         },
+//!         _ => {}
+//!     }
+//! });
+//!
+//! // Flash firmware from a directory
+//! let mut flasher = Flasher::from_directory(
+//!     PathBuf::from("/path/to/firmware"),
+//!     Some(callback.clone())
+//! ).unwrap();
+//!
+//! // Start the flashing process
+//! flasher.flash().unwrap();
+//! ```
+//!
+//! ## Device Connection
+//!
+//! To use this library, the Spotify Car Thing must be connected via USB and placed
+//! in USB Mode by holding buttons 1 & 4 during power-on.
+//!
+//! ## Configuration Format
+//!
+//! The flashing process is guided by a `meta.json` file that specifies a sequence
+//! of operations to perform. See the schema documentation for details on the format.
+
 mod aml;
 mod flash;
 mod partitions;
 mod setup;
 
+/// Configuration types for the flashing process
 pub mod config;
 
 use std::sync::Arc;
@@ -12,58 +75,101 @@ pub use flash::{FlashProgress, Flasher};
 
 use config::FlashStep;
 
-type Callback = Arc<dyn Fn(Event) + Send + Sync>;
+/// Callback type for receiving flash events
+///
+/// This is used to handle events during the flashing process, such as
+/// progress updates, device connection status, and step transitions.
+pub type Callback = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Events emitted during the flashing process
+///
+/// These events are sent to the callback function to notify about
+/// the progress and status of the flashing procedure.
 #[derive(Debug)]
 pub enum Event {
-  /// finding device
+  /// Indicates the tool is searching for a connected device
   FindingDevice,
-  /// found device in mode
+  /// Indicates the device was found and reports its current mode
   DeviceMode(DeviceMode),
-  /// connecting to device
+  /// Indicates the tool is attempting to connect to the device
   Connecting,
-  /// connected to device
+  /// Indicates a successful connection to the device
   Connected,
-  /// bl2 boot
+  /// Indicates the BL2 boot process has started
   Bl2Boot,
-  /// resetting
+  /// Indicates the device is being reset
   Resetting,
-  /// moved to step; this means previous step is over
+  /// Indicates movement to a new flashing step
+  ///
+  /// Parameters: (step_index, step_details)
   Step(usize, FlashStep),
-  /// percent complete with current step (for long-running steps)
+  /// Provides progress information for the current flashing step
   FlashProgress(FlashProgress),
 }
 
+/// Result type used throughout the crate
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Error types that can occur during the flashing process
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+  /// Error from the USB subsystem
   #[error("USB error: {0}")]
   UsbError(#[from] rusb::Error),
+
+  /// I/O related error
   #[error("IO error: {0}")]
   IoError(#[from] std::io::Error),
+
+  /// Error converting slices
   #[error("slice conversion error: {0}")]
   Bytes(#[from] std::array::TryFromSliceError),
+
+  /// Error when an operation is invalid in the current context
   #[error("Invalid operation: {0}")]
   InvalidOperation(String),
+
+  /// UTF-8 conversion error
   #[error("UTF8 conversion error: {0}")]
   Utf8Error(#[from] std::string::FromUtf8Error),
+
+  /// Error when the device is not found
   #[error("device not found!")]
   NotFound,
+
+  /// Error when the device is in an incompatible mode
   #[error("device in wrong mode!")]
   WrongMode,
+
+  /// Error when a bulk command fails
   #[error("bulkcmd failed: {0}")]
   BulkCmdFailed(String),
+
+  /// Error when the meta.json version is not supported
   #[error("unsupported `meta.json` version: {0}")]
   UnsupportedVersion(usize),
+
+  /// Error when a feature in meta.json is not supported
   #[error("unsupported `meta.json` feature: {:?}", 0)]
   UnsupportedFeature(config::FlashStep),
+
+  /// JSON deserialization error
   #[error("failed to deserialize json: {0}")]
   Json(#[from] serde_json::Error),
+
+  /// Error when a path expected to be a directory is not
   #[error("{0} is not a directory")]
   NotDir(std::path::PathBuf),
+
+  /// Error when the required meta.json file is not found
   #[error("could not find required `meta.json` at {0}")]
   NoMeta(std::path::PathBuf),
+
+  /// Error when a required file is missing
   #[error("required file does not exist at {0}")]
   FileMissing(std::path::PathBuf),
+
+  /// Zip archive error
   #[error("zip error: {0}")]
   Zip(#[from] zip::result::ZipError),
 }

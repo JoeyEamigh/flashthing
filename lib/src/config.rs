@@ -2,24 +2,36 @@ use crate::{flash::Zip, Error, Result, STOCK_META, SUPPORTED_META_VERSION};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs::read_to_string, io::Read, path::PathBuf};
 
+/// Configuration for the flashing process
+///
+/// This represents the entire flash configuration, including
+/// metadata and the sequence of steps to execute.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FlashConfig {
+  /// Name of the flash configuration
   pub name: String,
+  /// Version of the flash configuration
   pub version: String,
+  /// Description of what the flash configuration does
   pub description: String,
+  /// Sequence of steps to execute during flashing
   pub steps: Vec<FlashStep>,
+  /// Variables to store data between steps
   pub variables: Option<HashMap<String, usize>>,
+  /// Version of the metadata format
   pub metadata_version: usize,
 }
 
 impl FlashConfig {
-  /// Create a new FlashConfig where the flash files are relative to the `cwd`.
-  /// `path` MUST be the path to a directory.
+  /// Load a flash configuration from a directory
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to a directory
+  /// - `path`: Path to a directory containing a meta.json file
+  ///
+  /// # Returns
+  /// - `Result<Self>`: The loaded configuration or an error
   pub fn from_directory(path: &PathBuf) -> Result<Self> {
     if !path.exists() || !path.is_dir() {
       return Err(Error::NotDir(path.to_owned()));
@@ -36,11 +48,13 @@ impl FlashConfig {
     Ok(this)
   }
 
-  /// Create a new FlashConfig where the flash files are relative to the `cwd`.
-  /// `path` MUST be the path to a zip archive.
+  /// Load a flash configuration from a ZIP archive
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to the zip archive
+  /// - `zip`: ZIP archive containing a meta.json file
+  ///
+  /// # Returns
+  /// - `Result<Self>`: The loaded configuration or an error
   pub fn from_archive(zip: &mut Zip) -> Result<Self> {
     let mut meta_file = zip.by_name("meta.json")?;
 
@@ -52,14 +66,23 @@ impl FlashConfig {
     Ok(this)
   }
 
-  /// Create a new FlashConfig from a standalone `meta.json`
+  /// Parse a flash configuration from a JSON string
+  ///
+  /// # Parameters
+  /// - `json`: JSON string in meta.json format
+  ///
+  /// # Returns
+  /// - `Result<Self>`: The parsed configuration or an error
   pub fn from_standalone(json: &str) -> Result<Self> {
     let this: FlashConfig = serde_json::from_str(json)?;
     this.check_config_supported()?;
     Ok(this)
   }
 
-  /// Create a new FlashConfig using the stock meta.json
+  /// Load the built-in stock flash configuration
+  ///
+  /// # Returns
+  /// - `Result<Self>`: The stock configuration or an error
   pub fn from_stock() -> Result<Self> {
     let this: FlashConfig = serde_json::from_slice(STOCK_META)?;
     this.check_config_supported()?;
@@ -91,82 +114,130 @@ impl FlashConfig {
   }
 }
 
+/// Reference to a file in the flash package
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaFile {
+  /// Path to the file
   pub file_path: String,
+  /// Optional encoding for text files
   pub encoding: Option<String>,
 }
 
+/// Data that can be either inline or from a file
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum DataOrFile {
+  /// Inline binary data
   Data(Vec<u8>),
+  /// Reference to a file containing the data
   File(MetaFile),
 }
 
+/// String that can be either inline or from a file
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum StringOrFile {
+  /// Inline string
   String(String),
+  /// Reference to a file containing the string
   File(MetaFile),
 }
 
+/// A step in the flashing process
+///
+/// Each step represents a specific operation to perform during flashing.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FlashStep {
+  /// Identify the device
   Identify {
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Send a bulk command
   Bulkcmd {
+    /// Command to send
     value: String,
   },
+  /// Send a bulk command and get the status
   BulkcmdStat {
+    /// Command to send
     value: String,
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Run code at an address
   Run {
+    /// Run parameters
     value: RunValue,
   },
+  /// Write a small amount of data to memory
   WriteSimpleMemory {
+    /// Write parameters
     value: WriteSimpleMemoryValue,
   },
+  /// Write a large amount of data to memory
   WriteLargeMemory {
+    /// Write parameters
     value: WriteLargeMemoryValue,
   },
+  /// Read a small amount of data from memory
   ReadSimpleMemory {
+    /// Read parameters
     value: ReadMemoryValue,
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Read a large amount of data from memory
   ReadLargeMemory {
+    /// Read parameters
     value: ReadMemoryValue,
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Get AMLC boot information
   GetBootAMLC {
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Write AMLC data
   WriteAMLCData {
+    /// Write parameters
     value: WriteAMLCDataValue,
   },
+  /// Boot using BL2 bootloader
   Bl2Boot {
+    /// Boot parameters
     value: BL2BootValue,
   },
+  /// Validate the size of a partition
   ValidatePartitionSize {
+    /// Validation parameters
     value: ValidatePartitionSizeValue,
+    /// Variable to store the result
     variable: Option<String>,
   },
+  /// Restore a partition from backup
   RestorePartition {
+    /// Restore parameters
     value: RestorePartitionValue,
   },
+  /// Write to the U-Boot environment
   WriteEnv {
+    /// Environment data
     value: StringOrFile,
   },
+  /// Log a message
   Log {
+    /// Message to log
     value: String,
   },
+  /// Wait for a condition
   Wait {
+    /// Wait parameters
     value: WaitValue,
   },
 }
