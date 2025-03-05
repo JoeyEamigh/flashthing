@@ -16,7 +16,7 @@
     "dev": "bun run build:debug",
     "build": "napi build --platform --release --strip --esm",
     "build:debug": "napi build --platform --esm",
-    "prepublishOnly": "napi prepublish -t npm --gh-release false",
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release",
     "artifacts": "napi artifacts",
     "version": "napi version",
     "example": "bun run examples/index.ts"
