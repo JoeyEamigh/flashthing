@@ -23,6 +23,9 @@ struct Args {
   /// setup host - this currently only sets up udev rules on Linux
   #[arg(long, action)]
   setup: bool,
+  /// Send a single u-boot command to a device in USB burn mode and print its response.
+  #[arg(long, value_name = "CMD")]
+  bulkcmd: Option<String>,
 }
 
 fn main() {
@@ -50,6 +53,22 @@ fn main() {
       Err(err) => tracing::error!("failed to unbrick device: {}", err),
     }
 
+    return;
+  }
+
+  if let Some(cmd) = args.bulkcmd {
+    let Ok(aml) = flashthing::AmlogicSoC::init(None) else {
+      tracing::error!("could not find device!");
+      std::process::exit(1);
+    };
+
+    match aml.bulkcmd(&cmd) {
+      Ok(response) => print!("{}", response),
+      Err(err) => {
+        tracing::error!("bulkcmd failed: {}", err);
+        std::process::exit(1);
+      }
+    }
     return;
   }
 
