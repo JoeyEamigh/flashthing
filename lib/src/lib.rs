@@ -172,6 +172,10 @@ pub enum Error {
   /// Zip archive error
   #[error("zip error: {0}")]
   Zip(#[from] zip::result::ZipError),
+
+  /// whoami error
+  #[error("whoami error: {0}")]
+  Whoami(#[from] whoami::Error),
 }
 
 const SUPPORTED_META_VERSION: usize = 1;

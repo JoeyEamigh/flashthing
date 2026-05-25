@@ -373,7 +373,7 @@ impl AmlogicSoC {
         let padding = block_length - remainder;
         data_vec.extend(vec![0u8; padding]);
       }
-    } else if data_vec.len() % block_length != 0 {
+    } else if !data_vec.len().is_multiple_of(block_length) {
       return Err(Error::InvalidOperation(
         "Large Data must be a multiple of block length".into(),
       ));
@@ -973,8 +973,8 @@ impl AmlogicSoC {
         );
 
         // Check if it's the data partition which can have an alternate size
-        if part_name == "data" && part_info.size_alt.is_some() {
-          let alt_size = part_info.size_alt.unwrap() * PART_SECTOR_SIZE;
+        if part_name == "data" && let Some(alt_size_raw) = part_info.size_alt {
+          let alt_size = alt_size_raw * PART_SECTOR_SIZE;
           tracing::info!(
             "Failed while fetching last chunk of partition: {}, trying alternate size: {:#x} {}MB",
             part_name,

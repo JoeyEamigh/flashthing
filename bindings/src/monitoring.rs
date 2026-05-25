@@ -46,7 +46,7 @@ where
     };
 
     let js_event = FlashEvent::Log { data: log_msg };
-    let _ = self.tsfn.call(js_event, ThreadsafeFunctionCallMode::NonBlocking);
+    let _ = self.tsfn.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
   }
 }
 

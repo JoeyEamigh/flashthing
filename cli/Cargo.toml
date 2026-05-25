@@ -1,6 +1,6 @@
 [package]
 name = "flashthing-cli"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "cli for flashthing"
 repository = "https://github.com/JoeyEamigh/flashthing.git"
@@ -11,7 +11,7 @@ readme = "../README.md"
 license = "MIT"
 
 [dependencies]
-clap = { version = "4.5.28", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 flashthing = { path = "../lib", version = "0.1" }
 
 tracing = { workspace = true }

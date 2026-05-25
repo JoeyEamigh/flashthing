@@ -29,15 +29,14 @@ pub fn setup_host_linux() -> crate::Result<()> {
         .args(["udevadm", "control", "--reload-rules"])
         .status();
 
-      if let Ok(status) = reload_result {
-        if status.success() {
+      if let Ok(status) = reload_result
+        && status.success() {
           let _ = Command::new("pkexec").args(["udevadm", "trigger"]).status()?;
 
           tracing::info!("successfully activated udev rules. Device should now be accessible.");
           let _ = fs::remove_file(&temp_file_path);
           return Ok(());
         }
-      }
 
       tracing::warn!("installed rules but failed to reload automatically. please run:");
       tracing::warn!("  sudo udevadm control --reload-rules && sudo udevadm trigger");
