@@ -80,7 +80,8 @@ impl Flasher {
     // i hate clones like this but i need self to be mutable due to the zip
     let steps = self.config.steps.clone();
     for step in &steps {
-      tracing::trace!("starting step: {:?}", step);
+      let step_span = tracing::info_span!("step", ?step);
+      let _step_span_enter = step_span.enter();
 
       self.step += 1;
       if let Some(callback) = &self.callback {
