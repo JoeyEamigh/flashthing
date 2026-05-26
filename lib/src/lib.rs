@@ -172,6 +172,7 @@ pub enum Error {
   #[error("zip error: {0}")]
   Zip(#[from] zip::result::ZipError),
 
+  #[cfg(target_os = "linux")]
   /// whoami error
   #[error("whoami error: {0}")]
   Whoami(#[from] whoami::Error),
