@@ -1,7 +1,7 @@
 name: Publish Crates and NPM Packages
 env:
   DEBUG: napi:*
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
 permissions:
   contents: write
   id-token: write
@@ -48,6 +48,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: "https://registry.npmjs.org"
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -107,14 +108,14 @@ jobs:
         if: matrix.settings.target != 'wasm32-wasi-preview1-threads'
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: 'bindings/*.node'
+          path: "bindings/*.node"
           if-no-files-found: error
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: matrix.settings.target == 'wasm32-wasi-preview1-threads'
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: 'bindings/*.wasm'
+          path: "bindings/*.wasm"
           if-no-files-found: error
   universal-macOS:
     name: Build universal macOS binary
@@ -149,7 +150,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bindings-universal-apple-darwin
-          path: 'bindings/*.node'
+          path: "bindings/*.node"
           if-no-files-found: error
   publish:
     name: Publish

@@ -1,6 +1,6 @@
 {
   "name": "flashthing",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "N-API bindings for flashthing (flash the Spotify Car Thing)",
   "author": "Joey Eamigh <55670930+JoeyEamigh@users.noreply.github.com>",
   "homepage": "https://github.com/JoeyEamigh/flashthing",
@@ -35,6 +35,6 @@
       "x86_64-unknown-linux-musl",
       "universal-apple-darwin"
     ],
-    "npmClient": "bun"
+    "npmClient": "npm"
   }
 }
