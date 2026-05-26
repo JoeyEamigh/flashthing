@@ -3,7 +3,7 @@ use std::sync::Arc;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi_derive::napi;
 
-use crate::{conversion::FlashEvent, FlashCallback};
+use crate::{FlashCallback, conversion::FlashEvent};
 
 // Structure for the log messages sent to JavaScript
 #[napi(object)]
@@ -46,7 +46,7 @@ where
     };
 
     let js_event = FlashEvent::Log { data: log_msg };
-    let _ = self.tsfn.call(Ok(js_event), ThreadsafeFunctionCallMode::NonBlocking);
+    let _ = self.tsfn.call(js_event, ThreadsafeFunctionCallMode::NonBlocking);
   }
 }
 
@@ -81,7 +81,7 @@ impl tracing::field::Visit for MessageVisitor<'_> {
 pub fn init_logger(tsfn: Arc<FlashCallback>, level_directive: Option<String>) {
   use tracing::metadata::LevelFilter;
   use tracing_subscriber::{
-    filter::Directive, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+    EnvFilter, Layer, filter::Directive, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
   };
 
   let default_directive = Directive::from(LevelFilter::INFO);

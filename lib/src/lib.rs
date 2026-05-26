@@ -71,9 +71,8 @@ pub mod config;
 use std::sync::Arc;
 
 pub use aml::*;
-pub use flash::{FlashProgress, Flasher};
-
 use config::FlashStep;
+pub use flash::{FlashProgress, Flasher};
 
 /// Callback type for receiving flash events
 ///
@@ -178,7 +177,8 @@ pub enum Error {
   Whoami(#[from] whoami::Error),
 }
 
-const SUPPORTED_META_VERSION: usize = 1;
+const SUPPORTED_META_VERSION_MIN: usize = 1;
+const SUPPORTED_META_VERSION_MAX: usize = 2;
 
 const BL2_BIN: &[u8] = include_bytes!("../resources/superbird.bl2.encrypted.bin");
 const BOOTLOADER_BIN: &[u8] = include_bytes!("../resources/superbird.bootloader.img");

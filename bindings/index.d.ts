@@ -9,10 +9,12 @@ export declare class FlashThing {
   openStockArchive(path: string): Promise<void>
   /** Method to get total number of steps */
   getNumSteps(): number
-  /**  Method to flash with progress callback */
+  /** Method to flash with progress callback */
   flash(): Promise<void>
   /** Utility method to unbrick a device */
   unbrick(): Promise<void>
+  /** Set up host for flashing (this currently only does anything on Linux) */
+  hostSetup(): void
 }
 
 export interface Bl2BootValue {
@@ -71,6 +73,8 @@ export type FlashStep =
   | { type: 'Bl2Boot', value: Bl2BootValue }
   | { type: 'ValidatePartitionSize', value: ValidatePartitionSizeValue, variable?: string }
   | { type: 'RestorePartition', value: RestorePartitionValue }
+  | { type: 'WriteBootPartition', value: WriteBootPartitionValue }
+  | { type: 'WriteUserArea', value: WriteUserAreaValue }
   | { type: 'WriteEnv', value: StringOrFile }
   | { type: 'Log', value: string }
   | { type: 'Wait', value: WaitValue }
@@ -128,6 +132,11 @@ export interface WriteAmlcDataValue {
   data: DataOrFile
 }
 
+export interface WriteBootPartitionValue {
+  hwpart: number
+  data: DataOrFile
+}
+
 export interface WriteLargeMemoryValue {
   address: number
   data: DataOrFile
@@ -137,5 +146,10 @@ export interface WriteLargeMemoryValue {
 
 export interface WriteSimpleMemoryValue {
   address: number
+  data: DataOrFile
+}
+
+export interface WriteUserAreaValue {
+  lba: number
   data: DataOrFile
 }

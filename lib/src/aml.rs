@@ -1,12 +1,13 @@
-use rusb::{Context, DeviceHandle, Direction, UsbContext};
 use std::{io::Read, sync::Arc, thread::sleep, time::Duration};
 
+use rusb::{Context, DeviceHandle, Direction, UsbContext};
+
 use crate::{
-  flash::FlashProgress, partitions::PartitionInfo, Callback, Error, Event, Result, ADDR_BL2, ADDR_TMP,
-  AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, BL2_BIN, BOOTLOADER_BIN, FLAG_KEEP_POWER_ON,
-  PART_SECTOR_SIZE, PRODUCT_ID, REQ_BULKCMD, REQ_GET_AMLC, REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR,
-  REQ_WRITE_AMLC, REQ_WRITE_MEM, REQ_WR_LARGE_MEM, TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD, UNBRICK_BIN_ZIP,
-  VENDOR_ID,
+  ADDR_BL2, ADDR_TMP, AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, BL2_BIN, BOOTLOADER_BIN,
+  Callback, Error, Event, FLAG_KEEP_POWER_ON, PART_SECTOR_SIZE, PRODUCT_ID, REQ_BULKCMD, REQ_GET_AMLC,
+  REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR, REQ_WR_LARGE_MEM, REQ_WRITE_AMLC, REQ_WRITE_MEM, Result,
+  TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD, UNBRICK_BIN_ZIP, VENDOR_ID, flash::FlashProgress,
+  partitions::PartitionInfo,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -973,7 +974,9 @@ impl AmlogicSoC {
         );
 
         // Check if it's the data partition which can have an alternate size
-        if part_name == "data" && let Some(alt_size_raw) = part_info.size_alt {
+        if part_name == "data"
+          && let Some(alt_size_raw) = part_info.size_alt
+        {
           let alt_size = alt_size_raw * PART_SECTOR_SIZE;
           tracing::info!(
             "Failed while fetching last chunk of partition: {}, trying alternate size: {:#x} {}MB",
@@ -1032,6 +1035,156 @@ impl AmlogicSoC {
         }
       }
     }
+  }
+
+  /// Write a boot hwpartition (boot0 / boot1) wholesale.
+  ///
+  /// Switches the eMMC to the named hwpart, single-shot DDR-stages the bytes,
+  /// `mmc write`s them at LBA 0, then restores the user area selection.
+  ///
+  /// # Parameters
+  /// - `hwpart`: 1 for boot0, 2 for boot1.
+  /// - `data`: payload (signed boot.bin). Capped at `TRANSFER_SIZE_THRESHOLD`.
+  #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
+  pub fn write_boot_partition(&self, hwpart: u8, data: &[u8]) -> Result<()> {
+    if !(1..=2).contains(&hwpart) {
+      return Err(Error::InvalidOperation(format!(
+        "boot hwpart must be 1 or 2, got {hwpart}"
+      )));
+    }
+    if data.len() > TRANSFER_SIZE_THRESHOLD {
+      return Err(Error::InvalidOperation(format!(
+        "boot partition payload {} bytes exceeds single-transfer cap {}",
+        data.len(),
+        TRANSFER_SIZE_THRESHOLD
+      )));
+    }
+
+    tracing::info!("writing {} bytes to boot{}", data.len(), hwpart - 1);
+
+    self.bulkcmd(&format!("mmc dev 1 {hwpart}"))?;
+    self.bulkcmd("amlmmc key")?;
+
+    self.write_large_memory(ADDR_TMP, data, TRANSFER_BLOCK_SIZE, true)?;
+
+    let sector_count = data.len().div_ceil(PART_SECTOR_SIZE);
+    self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} 0 {sector_count:#X}"))?;
+
+    self.bulkcmd("mmc dev 1 0")?;
+    Ok(())
+  }
+
+  /// Stream bytes onto the user area at an absolute LBA, chunked with progress.
+  ///
+  /// Same DDR-stage + `mmc write` loop as `write_large_memory_to_disk`, but
+  /// takes the LBA directly (no byte->sector conversion at the call site) and
+  /// pins hwpart 0 up front so a prior `mmc dev 1 N` for a boot partition
+  /// doesn't leak into the write.
+  #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
+  pub fn write_user_area<R: Read, F: Fn(FlashProgress)>(
+    &self,
+    lba_offset: u32,
+    mut reader: R,
+    data_size: usize,
+    progress_callback: F,
+  ) -> Result<()> {
+    tracing::info!(
+      "streaming {} bytes to user area starting at LBA {}",
+      data_size,
+      lba_offset
+    );
+
+    let start_time = std::time::Instant::now();
+    let mut total_chunks = 0;
+    let mut avg_chunk_time_secs = 0.0;
+
+    self.bulkcmd("mmc dev 1 0")?;
+    self.bulkcmd("amlmmc key")?;
+
+    let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
+    let mut offset = 0;
+    let mut buffer = vec![0u8; max_bytes_per_transfer];
+
+    while offset < data_size {
+      let chunk_start_time = std::time::Instant::now();
+
+      let remaining = data_size - offset;
+      let write_length = std::cmp::min(remaining, max_bytes_per_transfer);
+
+      let data_slice = &mut buffer[..write_length];
+      reader.read_exact(data_slice)?;
+
+      self.write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)?;
+
+      let chunk_lba = lba_offset as usize + offset / PART_SECTOR_SIZE;
+      let chunk_sectors = write_length / PART_SECTOR_SIZE;
+
+      let cmd_start = std::time::Instant::now();
+      let mut retries = 0;
+      let max_retries = 3;
+      loop {
+        match self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} {chunk_lba:#X} {chunk_sectors:#X}")) {
+          Ok(_) => {
+            if cmd_start.elapsed() > Duration::from_millis(3000) {
+              tracing::debug!("mmc write took {}ms, cooling down 5s", cmd_start.elapsed().as_millis());
+              sleep(Duration::from_secs(5));
+            }
+            break;
+          }
+          Err(e) => {
+            retries += 1;
+            if retries >= max_retries {
+              return Err(e);
+            }
+            tracing::warn!(
+              "mmc write failed at LBA {chunk_lba:#X}, retrying ({}/{}): {}",
+              retries,
+              max_retries,
+              e
+            );
+            sleep(Duration::from_secs(5));
+          }
+        }
+      }
+
+      let chunk_time_secs = chunk_start_time.elapsed().as_secs_f64();
+      total_chunks += 1;
+      if total_chunks == 1 {
+        avg_chunk_time_secs = chunk_time_secs;
+      } else {
+        avg_chunk_time_secs += (chunk_time_secs - avg_chunk_time_secs) / total_chunks as f64;
+      }
+
+      offset += write_length;
+      let progress_percent = offset as f64 / data_size as f64 * 100.0;
+      let elapsed_secs = start_time.elapsed().as_secs_f64();
+      let bytes_per_sec = if elapsed_secs > 0.0 {
+        offset as f64 / elapsed_secs
+      } else {
+        offset as f64
+      };
+      let eta_secs = if bytes_per_sec > 0.0 {
+        (data_size - offset) as f64 / bytes_per_sec
+      } else {
+        0.0
+      };
+
+      progress_callback(FlashProgress {
+        percent: progress_percent,
+        elapsed: elapsed_secs * 1000.0,
+        eta: eta_secs * 1000.0,
+        rate: write_length as f64 / chunk_time_secs / 1024.0,
+        avg_chunk_time: avg_chunk_time_secs * 1000.0,
+        avg_rate: bytes_per_sec / 1024.0,
+      });
+    }
+
+    tracing::info!(
+      "user-area write complete: {} bytes in {:?}",
+      data_size,
+      start_time.elapsed()
+    );
+    Ok(())
   }
 
   /// Restore a partition from a data source

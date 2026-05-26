@@ -1,8 +1,9 @@
 mod monitoring;
 
+use std::{env, ffi::OsStr, path::PathBuf};
+
 use clap::Parser;
 use flashthing::Flasher;
-use std::{env, ffi::OsStr, path::PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(

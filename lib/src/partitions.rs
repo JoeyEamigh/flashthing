@@ -1,7 +1,8 @@
 //! Partitions for Superbird, extracted from output of: bulkcmd 'amlmmc part 1'
 
-use lazy_static::lazy_static;
 use std::collections::HashMap;
+
+use lazy_static::lazy_static;
 
 /// Information about a partition on the device
 #[derive(Debug, Clone)]

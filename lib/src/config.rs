@@ -1,6 +1,8 @@
-use crate::{flash::Zip, Error, Result, STOCK_META, SUPPORTED_META_VERSION};
-use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs::read_to_string, io::Read, path::PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Error, Result, STOCK_META, SUPPORTED_META_VERSION_MAX, SUPPORTED_META_VERSION_MIN, flash::Zip};
 
 /// Configuration for the flashing process
 ///
@@ -90,7 +92,7 @@ impl FlashConfig {
   }
 
   fn check_config_supported(&self) -> Result<()> {
-    if self.metadata_version != SUPPORTED_META_VERSION {
+    if !(SUPPORTED_META_VERSION_MIN..=SUPPORTED_META_VERSION_MAX).contains(&self.metadata_version) {
       return Err(Error::UnsupportedVersion(self.metadata_version));
     }
 
@@ -225,6 +227,16 @@ pub enum FlashStep {
     /// Restore parameters
     value: RestorePartitionValue,
   },
+  /// Write a boot hwpartition (boot0 / boot1) wholesale
+  WriteBootPartition {
+    /// Write parameters
+    value: WriteBootPartitionValue,
+  },
+  /// Write a span of the user area starting at the given LBA
+  WriteUserArea {
+    /// Write parameters
+    value: WriteUserAreaValue,
+  },
   /// Write to the U-Boot environment
   WriteEnv {
     /// Environment data
@@ -303,6 +315,22 @@ pub struct RestorePartitionValue {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteBootPartitionValue {
+  /// eMMC hwpart index: 1 = boot0, 2 = boot1.
+  pub hwpart: u8,
+  pub data: DataOrFile,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteUserAreaValue {
+  /// absolute LBA on hwpart 0; sector size is 512.
+  pub lba: u32,
+  pub data: DataOrFile,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WaitValue {
   UserInput { message: String },
@@ -358,6 +386,30 @@ mod tests {
     assert_eq!(config.name, "nixos-superbird");
     assert_eq!(config.version, "0.2.0");
     assert_eq!(config.steps.len(), 5);
+  }
+
+  #[test]
+  fn test_mainline_first_flash() {
+    let json = r#"
+        {
+          "metadataVersion": 2,
+          "name": "bridgething",
+          "version": "0.1.0",
+          "description": "Bridgething mainline-uboot first flash",
+          "steps": [
+            { "type": "bulkcmd", "value": "amlmmc key" },
+            { "type": "writeBootPartition", "value": { "hwpart": 1, "data": { "filePath": "superbird-boot.bin" } } },
+            { "type": "writeBootPartition", "value": { "hwpart": 2, "data": { "filePath": "superbird-boot.bin" } } },
+            { "type": "writeUserArea", "value": { "lba": 0, "data": { "filePath": "superbird.wic" } } },
+            { "type": "writeUserArea", "value": { "lba": 2451456, "data": { "filePath": "bandaid.ext4" } } }
+          ]
+        }
+        "#;
+    let config = FlashConfig::from_standalone(json).expect("mainline meta.json should parse");
+    assert_eq!(config.metadata_version, 2);
+    assert_eq!(config.steps.len(), 5);
+    matches!(&config.steps[1], FlashStep::WriteBootPartition { value } if value.hwpart == 1);
+    matches!(&config.steps[3], FlashStep::WriteUserArea { value } if value.lba == 0);
   }
 
   #[test]

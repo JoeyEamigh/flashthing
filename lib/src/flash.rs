@@ -9,12 +9,13 @@ use std::{
 use zip::ZipArchive;
 
 use crate::{
+  ADDR_TMP, AmlogicSoC, Callback, Error, Event, Result, TRANSFER_BLOCK_SIZE,
   config::{
     BL2BootValue, DataOrFile, FlashConfig, FlashStep, ReadMemoryValue, RestorePartitionValue, RunValue, StringOrFile,
-    ValidatePartitionSizeValue, WaitValue, WriteAMLCDataValue, WriteLargeMemoryValue, WriteSimpleMemoryValue,
+    ValidatePartitionSizeValue, WaitValue, WriteAMLCDataValue, WriteBootPartitionValue, WriteLargeMemoryValue,
+    WriteSimpleMemoryValue, WriteUserAreaValue,
   },
   partitions::SUPERBIRD_PARTITIONS,
-  AmlogicSoC, Callback, Error, Event, Result, ADDR_TMP, TRANSFER_BLOCK_SIZE,
 };
 
 /// Type alias for zip archive reading from a file
@@ -100,6 +101,8 @@ impl Flasher {
         FlashStep::Bl2Boot { value } => self.bl2_boot(value)?,
         FlashStep::ValidatePartitionSize { value, variable } => self.validate_partition_size(value, variable)?,
         FlashStep::RestorePartition { value } => self.restore_partition(value)?,
+        FlashStep::WriteBootPartition { value } => self.write_boot_partition(value)?,
+        FlashStep::WriteUserArea { value } => self.write_user_area(value)?,
         FlashStep::WriteEnv { value } => self.write_env(value)?,
         FlashStep::Log { value } => self.log(value)?,
         FlashStep::Wait { value } => self.wait(value)?,
@@ -325,6 +328,37 @@ impl Flasher {
     self
       .aml
       .restore_partition(part_name, part_size, file_reader, file_size, progress_callback)?;
+
+    Ok(FlashOutcome::Normal)
+  }
+
+  fn write_boot_partition(&mut self, value: &WriteBootPartitionValue) -> Result<FlashOutcome> {
+    tracing::debug!("running write_boot_partition with value {:?}", value);
+    let data = self.handle_data_or_file(&value.data)?;
+
+    let start_time = std::time::Instant::now();
+    self.aml.write_boot_partition(value.hwpart, &data)?;
+    tracing::trace!("write_boot_partition completed in {:?}", start_time.elapsed());
+
+    Ok(FlashOutcome::Normal)
+  }
+
+  fn write_user_area(&mut self, value: &WriteUserAreaValue) -> Result<FlashOutcome> {
+    tracing::debug!("running write_user_area with value {:?}", value);
+    let (file_size, file) = handle_data_or_file_stream(&value.data, &mut self.mode)?;
+
+    let caller_callback = self.callback.clone();
+    let progress_callback = |progress: FlashProgress| {
+      if let Some(callback) = &caller_callback {
+        callback(Event::FlashProgress(progress.clone()));
+      };
+    };
+
+    let start_time = std::time::Instant::now();
+    self
+      .aml
+      .write_user_area(value.lba, file, file_size, progress_callback)?;
+    tracing::trace!("write_user_area completed in {:?}", start_time.elapsed());
 
     Ok(FlashOutcome::Normal)
   }

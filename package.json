@@ -3,17 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "turbo build",
-    "dev": "turbo dev",
-    "lint": "turbo lint",
+    "build": "turbo build  --env-mode=loose",
+    "dev": "turbo dev  --env-mode=loose",
+    "lint": "turbo lint  --env-mode=loose",
     "format": "prettier --write \"**/*.{ts,tsx,md}\""
   },
   "devDependencies": {
-    "turbo": "^2.4.0",
+    "turbo": "^2.9.14",
     "typescript": "5.7.3",
     "@types/bun": "latest",
-    "prettier": "^3.4.2",
-    "prettier-plugin-organize-imports": "^4.1.0"
+    "prettier": "^3.8.3",
+    "prettier-plugin-organize-imports": "^4.3.0"
   },
   "engines": {
     "node": ">=18"

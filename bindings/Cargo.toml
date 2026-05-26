@@ -1,7 +1,7 @@
 [package]
 name = "n-flashthing"
-version = "0.1.5"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 license = "MIT"
 
 [lib]
@@ -15,13 +15,13 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dependencies.napi]
-version = "3.0.0-alpha.31"
+version = "3.9"
 default-features = false
 # see https://nodejs.org/api/n-api.html#node-api-version-matrix
 features = ["napi4", "async"]
 
 [dependencies.napi-derive]
-version = "3.0.0-alpha.28"
+version = "3.5"
 features = ["type-def"]
 
 [build-dependencies]

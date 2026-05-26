@@ -3,14 +3,14 @@
 mod conversion;
 mod monitoring;
 
-use conversion::*;
-use monitoring::init_logger;
-
-use napi::{bindgen_prelude::*, threadsafe_function::*};
-use napi_derive::napi;
 use std::{path::PathBuf, sync::Arc};
 
-type FlashCallback = ThreadsafeFunction<FlashEvent, Unknown, FlashEvent, false>;
+use conversion::*;
+use monitoring::init_logger;
+use napi::{bindgen_prelude::*, threadsafe_function::*};
+use napi_derive::napi;
+
+type FlashCallback = ThreadsafeFunction<FlashEvent, Unknown<'static>, FlashEvent, Status, false>;
 type FlasherCallbackHandler = Arc<dyn Fn(flashthing::Event) + Send + Sync>;
 
 #[napi(object)]
@@ -33,7 +33,7 @@ impl FlashThing {
     constructor,
     ts_args_type = "callback: (event: FlashEvent) => void, options?: FlashThingOptions"
   )]
-  pub fn new(callback: Function<FlashEvent>, options: Option<FlashThingOptions>) -> Result<Self> {
+  pub fn new(callback: Function<FlashEvent, Unknown<'static>>, options: Option<FlashThingOptions>) -> Result<Self> {
     let (tsfn, callback) = create_callback(callback)?;
     init_logger(tsfn, options.unwrap_or_default().log_level_directive);
 
@@ -150,8 +150,10 @@ impl FlashThing {
   }
 }
 
-fn create_callback(callback: Function<FlashEvent>) -> Result<(Arc<FlashCallback>, FlasherCallbackHandler)> {
-  let tsfn = Arc::new(callback.build_threadsafe_function().build()?);
+fn create_callback(
+  callback: Function<FlashEvent, Unknown<'static>>,
+) -> Result<(Arc<FlashCallback>, FlasherCallbackHandler)> {
+  let tsfn = Arc::new(callback.build_threadsafe_function().callee_handled::<false>().build()?);
 
   let callback = tsfn.clone();
   let callback = move |event: flashthing::Event| {

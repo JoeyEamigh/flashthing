@@ -186,6 +186,12 @@ pub enum FlashStep {
   RestorePartition {
     value: RestorePartitionValue,
   },
+  WriteBootPartition {
+    value: WriteBootPartitionValue,
+  },
+  WriteUserArea {
+    value: WriteUserAreaValue,
+  },
   WriteEnv {
     value: StringOrFile,
   },
@@ -222,6 +228,8 @@ impl From<flashthing::config::FlashStep> for FlashStep {
         variable,
       },
       flashthing::config::FlashStep::RestorePartition { value } => Self::RestorePartition { value: value.into() },
+      flashthing::config::FlashStep::WriteBootPartition { value } => Self::WriteBootPartition { value: value.into() },
+      flashthing::config::FlashStep::WriteUserArea { value } => Self::WriteUserArea { value: value.into() },
       flashthing::config::FlashStep::WriteEnv { value } => Self::WriteEnv { value: value.into() },
       flashthing::config::FlashStep::Log { value } => Self::Log { value },
       flashthing::config::FlashStep::Wait { value } => Self::Wait { value: value.into() },
@@ -346,6 +354,36 @@ impl From<flashthing::config::RestorePartitionValue> for RestorePartitionValue {
   fn from(value: flashthing::config::RestorePartitionValue) -> Self {
     Self {
       name: value.name,
+      data: value.data.into(),
+    }
+  }
+}
+
+#[napi(object)]
+pub struct WriteBootPartitionValue {
+  pub hwpart: u8,
+  pub data: DataOrFile,
+}
+
+impl From<flashthing::config::WriteBootPartitionValue> for WriteBootPartitionValue {
+  fn from(value: flashthing::config::WriteBootPartitionValue) -> Self {
+    Self {
+      hwpart: value.hwpart,
+      data: value.data.into(),
+    }
+  }
+}
+
+#[napi(object)]
+pub struct WriteUserAreaValue {
+  pub lba: u32,
+  pub data: DataOrFile,
+}
+
+impl From<flashthing::config::WriteUserAreaValue> for WriteUserAreaValue {
+  fn from(value: flashthing::config::WriteUserAreaValue) -> Self {
+    Self {
+      lba: value.lba,
       data: value.data.into(),
     }
   }
