@@ -883,8 +883,36 @@ impl AmlogicSoC {
   ///
   /// # Returns
   /// - `Result<String>`: The command response or an error
+  ///
+  /// Sends the command, retrying on failure. A single send propagates any error to the caller,
+  /// which aborts the flash; this was observed most frequently while validating `dtbo_a`, where
+  /// one failure ended an otherwise-complete flash. `bulkcmd` calls `bulkcmd_once` up to six times
+  /// with a 1500 ms delay between attempts, returning an error only if every attempt fails.
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn bulkcmd(&self, command: &str) -> Result<String> {
+    const BULKCMD_RETRIES: u32 = 6;
+    let mut last_err = None;
+    for attempt in 1..=BULKCMD_RETRIES {
+      match self.bulkcmd_once(command) {
+        Ok(response) => return Ok(response),
+        Err(e) => {
+          tracing::warn!(
+            "bulkcmd {:?} failed (attempt {}/{}): {}; retrying",
+            command,
+            attempt,
+            BULKCMD_RETRIES,
+            e
+          );
+          last_err = Some(e);
+          std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+      }
+    }
+    Err(last_err.expect("retry loop runs at least once"))
+  }
+
+  /// Send a single bulk command without retrying.
+  fn bulkcmd_once(&self, command: &str) -> Result<String> {
     tracing::debug!("sending bulk command: {:?}", command);
     let mut command = command.as_bytes().to_vec();
     command.push(0x00);
