@@ -1074,24 +1074,20 @@ impl AmlogicSoC {
     Ok(())
   }
 
-  /// Stream bytes onto the user area at an absolute LBA, chunked with progress.
-  ///
-  /// Same DDR-stage + `mmc write` loop as `write_large_memory_to_disk`, but
-  /// takes the LBA directly (no byte->sector conversion at the call site) and
-  /// pins hwpart 0 up front so a prior `mmc dev 1 N` for a boot partition
-  /// doesn't leak into the write.
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub fn write_user_area<R: Read, F: Fn(FlashProgress)>(
     &self,
     lba_offset: u32,
     mut reader: R,
     data_size: usize,
+    sparse: bool,
     progress_callback: F,
   ) -> Result<()> {
     tracing::info!(
-      "streaming {} bytes to user area starting at LBA {}",
+      "streaming {} bytes to user area starting at LBA {} (sparse: {})",
       data_size,
-      lba_offset
+      lba_offset,
+      sparse
     );
 
     let start_time = std::time::Instant::now();
@@ -1100,6 +1096,16 @@ impl AmlogicSoC {
 
     self.bulkcmd("mmc dev 1 0")?;
     self.bulkcmd("amlmmc key")?;
+
+    if sparse {
+      let total_sectors = data_size.div_ceil(PART_SECTOR_SIZE);
+      tracing::info!(
+        "erasing {} sectors at LBA {} before sparse write",
+        total_sectors,
+        lba_offset
+      );
+      self.bulkcmd(&format!("mmc erase {lba_offset:#X} {total_sectors:#X}"))?;
+    }
 
     let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
     let mut offset = 0;
@@ -1114,35 +1120,43 @@ impl AmlogicSoC {
       let data_slice = &mut buffer[..write_length];
       reader.read_exact(data_slice)?;
 
-      self.write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)?;
+      let skip = sparse && buffer[..write_length].iter().all(|&b| b == 0);
+      if skip {
+        tracing::debug!(
+          "skipping all-zero chunk at LBA {:#X}",
+          lba_offset as usize + offset / PART_SECTOR_SIZE
+        );
+      } else {
+        self.write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)?;
 
-      let chunk_lba = lba_offset as usize + offset / PART_SECTOR_SIZE;
-      let chunk_sectors = write_length / PART_SECTOR_SIZE;
+        let chunk_lba = lba_offset as usize + offset / PART_SECTOR_SIZE;
+        let chunk_sectors = write_length / PART_SECTOR_SIZE;
 
-      let cmd_start = std::time::Instant::now();
-      let mut retries = 0;
-      let max_retries = 3;
-      loop {
-        match self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} {chunk_lba:#X} {chunk_sectors:#X}")) {
-          Ok(_) => {
-            if cmd_start.elapsed() > Duration::from_millis(3000) {
-              tracing::debug!("mmc write took {}ms, cooling down 5s", cmd_start.elapsed().as_millis());
+        let cmd_start = std::time::Instant::now();
+        let mut retries = 0;
+        let max_retries = 3;
+        loop {
+          match self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} {chunk_lba:#X} {chunk_sectors:#X}")) {
+            Ok(_) => {
+              if cmd_start.elapsed() > Duration::from_millis(3000) {
+                tracing::debug!("mmc write took {}ms, cooling down 5s", cmd_start.elapsed().as_millis());
+                sleep(Duration::from_secs(5));
+              }
+              break;
+            }
+            Err(e) => {
+              retries += 1;
+              if retries >= max_retries {
+                return Err(e);
+              }
+              tracing::warn!(
+                "mmc write failed at LBA {chunk_lba:#X}, retrying ({}/{}): {}",
+                retries,
+                max_retries,
+                e
+              );
               sleep(Duration::from_secs(5));
             }
-            break;
-          }
-          Err(e) => {
-            retries += 1;
-            if retries >= max_retries {
-              return Err(e);
-            }
-            tracing::warn!(
-              "mmc write failed at LBA {chunk_lba:#X}, retrying ({}/{}): {}",
-              retries,
-              max_retries,
-              e
-            );
-            sleep(Duration::from_secs(5));
           }
         }
       }
@@ -1168,6 +1182,16 @@ impl AmlogicSoC {
       } else {
         0.0
       };
+
+      tracing::info!(
+        "progress: {:.1}% | elapsed: {:.1}s | eta: {:.1}s | rate: {:.2} KB/s | avg chunk: {:.1}s | avg rate: {:.2} KB/s",
+        progress_percent,
+        elapsed_secs,
+        eta_secs,
+        write_length as f64 / chunk_time_secs / 1024.0,
+        avg_chunk_time_secs,
+        bytes_per_sec / 1024.0
+      );
 
       progress_callback(FlashProgress {
         percent: progress_percent,
@@ -1210,7 +1234,6 @@ impl AmlogicSoC {
     tracing::debug!("restoring partition: {} with file size: {}", part_name, file_size);
 
     let adjusted_part_size = if part_name == "bootloader" {
-      // Bootloader is only 2MB, though dumps may be zero-padded to 4MB
       2 * 1024 * 1024
     } else {
       part_size
@@ -1249,9 +1272,7 @@ impl AmlogicSoC {
       let mut retries = 0;
       let max_retries = 3;
 
-      // Special handling for bootloader partition
       if part_name == "bootloader" {
-        // Bootloader writes always cause timeout - this is expected
         match self.bulkcmd(&format!(
           "amlmmc write {} {:#x} {:#x} {:#x}",
           part_name, ADDR_TMP, offset, write_length
@@ -1259,7 +1280,7 @@ impl AmlogicSoC {
           Ok(_) => tracing::debug!("bootloader write succeeded unexpectedly"),
           Err(e) => tracing::debug!("expected timeout for bootloader write: {}", e),
         }
-        sleep(Duration::from_secs(2)); // Allow time for write to complete
+        sleep(Duration::from_secs(2));
       } else {
         loop {
           match self.bulkcmd(&format!(
@@ -1280,7 +1301,7 @@ impl AmlogicSoC {
                 return Err(e);
               }
               tracing::warn!("write command failed, retrying ({}/{}): {}", retries, max_retries, e);
-              sleep(Duration::from_secs(5)); // cooldown after error
+              sleep(Duration::from_secs(5));
             }
           }
         }

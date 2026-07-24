@@ -322,12 +322,15 @@ pub struct WriteBootPartitionValue {
   pub data: DataOrFile,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteUserAreaValue {
   /// absolute LBA on hwpart 0; sector size is 512.
   pub lba: u32,
   pub data: DataOrFile,
+  /// erase the target lba range first, then skip all-zero chunks instead of writing them.
+  pub sparse: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

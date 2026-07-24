@@ -378,6 +378,7 @@ impl From<flashthing::config::WriteBootPartitionValue> for WriteBootPartitionVal
 pub struct WriteUserAreaValue {
   pub lba: u32,
   pub data: DataOrFile,
+  pub sparse: Option<bool>,
 }
 
 impl From<flashthing::config::WriteUserAreaValue> for WriteUserAreaValue {
@@ -385,6 +386,7 @@ impl From<flashthing::config::WriteUserAreaValue> for WriteUserAreaValue {
     Self {
       lba: value.lba,
       data: value.data.into(),
+      sparse: value.sparse,
     }
   }
 }

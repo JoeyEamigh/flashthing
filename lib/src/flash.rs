@@ -357,7 +357,7 @@ impl Flasher {
     let start_time = std::time::Instant::now();
     self
       .aml
-      .write_user_area(value.lba, file, file_size, progress_callback)?;
+      .write_user_area(value.lba, file, file_size, value.sparse.unwrap_or(false), progress_callback)?;
     tracing::trace!("write_user_area completed in {:?}", start_time.elapsed());
 
     Ok(FlashOutcome::Normal)
@@ -429,7 +429,6 @@ impl Flasher {
           Ok(data)
         }
         FlashMode::Archive(zip) => {
-          tracing::warn!("reading whole file into memory! is this what you want??");
           let file_name = if file.file_path.starts_with("./") {
             file.file_path.replacen("./", "", 1)
           } else {

@@ -152,4 +152,5 @@ export interface WriteSimpleMemoryValue {
 export interface WriteUserAreaValue {
   lba: number
   data: DataOrFile
+  sparse?: boolean
 }
