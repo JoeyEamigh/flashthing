@@ -18,11 +18,12 @@
 //! ## Usage Example
 //!
 //! ```no_run
-//! use flashthing::{AmlogicSoC, Flasher, Event};
+//! use flashthing::{Event, Flasher};
 //! use std::{path::PathBuf, sync::Arc};
 //!
+//! # async fn example() -> flashthing::Result<()> {
 //! // Set up USB access for the device (on Linux, but no-op for other OSes so fine to call)
-//! AmlogicSoC::host_setup().unwrap();
+//! flashthing::host_setup().unwrap();
 //!
 //! // Create a callback to handle events
 //! let callback = Arc::new(|event: Event| {
@@ -44,10 +45,12 @@
 //! let mut flasher = Flasher::from_directory(
 //!     PathBuf::from("/path/to/firmware"),
 //!     Some(callback.clone())
-//! ).unwrap();
+//! ).await?;
 //!
 //! // Start the flashing process
-//! flasher.flash().unwrap();
+//! flasher.flash().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Device Connection
@@ -63,22 +66,45 @@
 mod aml;
 mod flash;
 mod partitions;
+mod time;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
 mod setup;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 /// Configuration types for the flashing process
 pub mod config;
+/// Payload sources the flash steps stream their data from
+pub mod payload;
+/// The USB backend the Amlogic protocol runs over
+pub mod usb;
 
 use std::sync::Arc;
 
 pub use aml::*;
 use config::FlashStep;
 pub use flash::{FlashProgress, Flasher};
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{FlashMode, NativeUsb, Zip};
+#[cfg(target_arch = "wasm32")]
+pub use web::{JsStore, WebUsb};
 
 /// Callback type for receiving flash events
 ///
 /// This is used to handle events during the flashing process, such as
 /// progress updates, device connection status, and step transitions.
+#[cfg(not(target_arch = "wasm32"))]
 pub type Callback = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Callback type for receiving flash events
+///
+/// This is used to handle events during the flashing process, such as
+/// progress updates, device connection status, and step transitions.
+#[cfg(target_arch = "wasm32")]
+pub type Callback = Arc<dyn Fn(Event)>;
 
 /// Events emitted during the flashing process
 ///
@@ -113,8 +139,18 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
   /// Error from the USB subsystem
+  #[cfg(not(target_arch = "wasm32"))]
   #[error("USB error: {0}")]
   UsbError(#[from] rusb::Error),
+
+  /// Error crossing the JavaScript boundary
+  #[cfg(target_arch = "wasm32")]
+  #[error("JS error: {0}")]
+  Js(String),
+
+  /// Error when an operation did not finish within its timeout
+  #[error("operation timed out")]
+  Timeout,
 
   /// I/O related error
   #[error("IO error: {0}")]
@@ -169,6 +205,7 @@ pub enum Error {
   FileMissing(std::path::PathBuf),
 
   /// Zip archive error
+  #[cfg(not(target_arch = "wasm32"))]
   #[error("zip error: {0}")]
   Zip(#[from] zip::result::ZipError),
 
@@ -181,13 +218,18 @@ pub enum Error {
 const SUPPORTED_META_VERSION_MIN: usize = 1;
 const SUPPORTED_META_VERSION_MAX: usize = 2;
 
-const BL2_BIN: &[u8] = include_bytes!("../resources/superbird.bl2.encrypted.bin");
-const BOOTLOADER_BIN: &[u8] = include_bytes!("../resources/superbird.bootloader.img");
+pub const BL2_BIN: &[u8] = include_bytes!("../resources/superbird.bl2.encrypted.bin");
+pub const BOOTLOADER_BIN: &[u8] = include_bytes!("../resources/superbird.bootloader.img");
+#[cfg(not(target_arch = "wasm32"))]
 const UNBRICK_BIN_ZIP: &[u8] = include_bytes!("../resources/unbrick.bin.zip");
+#[cfg(not(target_arch = "wasm32"))]
 const STOCK_META: &[u8] = include_bytes!("../resources/stock-meta.json");
 
 const VENDOR_ID: u16 = 0x1b8e;
 const PRODUCT_ID: u16 = 0xc003;
+
+const VENDOR_ID_NORMAL: u16 = 0x18d1;
+const PRODUCT_ID_NORMAL: u16 = 0x4e40;
 
 #[allow(dead_code)]
 const VENDOR_ID_BOOTED: u16 = 0x1d6b;

@@ -1,6 +1,6 @@
 [package]
 name = "flashthing"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "tool for flashing your Spotify Car Thing"
 repository = "https://github.com/JoeyEamigh/flashthing.git"
@@ -12,18 +12,47 @@ license = "MIT"
 
 [dependencies]
 tracing = { workspace = true }
-
-rusb = "0.9.4"
 thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_with = "3.20.0"
-zip = "2.4.2"
 lazy_static = "1.5.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 whoami = "2.1.2"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusb = "0.9.4"
+zip = "8.6.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.103"
+wasm-bindgen = "0.2.126"
+wasm-bindgen-futures = "0.4.76"
+web-sys = { version = "0.3.103", features = [
+  "Usb",
+  "UsbDevice",
+  "UsbConfiguration",
+  "UsbInterface",
+  "UsbAlternateInterface",
+  "UsbEndpoint",
+  "UsbDirection",
+  "UsbEndpointType",
+  "UsbControlTransferParameters",
+  "UsbRequestType",
+  "UsbRecipient",
+  "UsbInTransferResult",
+  "UsbOutTransferResult",
+  "UsbTransferStatus",
+  "Performance",
+  "console",
+  "Navigator",
+  "Window",
+] }
+
 [features]
 default = []
 instrument = []
+
+[dev-dependencies]
+pollster = "1.0.1"

@@ -14,7 +14,7 @@
     },
     "bindings": {
       "name": "flashthing",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "devDependencies": {
         "@napi-rs/cli": "^3.6.2",
       },

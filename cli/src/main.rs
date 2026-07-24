@@ -35,7 +35,7 @@ fn main() {
   let args = Args::parse();
   if args.setup {
     tracing::info!("setting up host...");
-    match flashthing::AmlogicSoC::host_setup() {
+    match flashthing::host_setup() {
       Ok(()) => tracing::info!("host set up successfully"),
       Err(err) => tracing::error!("failed to set up host: {}", err),
     }
@@ -44,12 +44,12 @@ fn main() {
 
   if args.unbrick {
     tracing::info!("unbricking device...");
-    let Ok(aml) = flashthing::AmlogicSoC::init(None) else {
+    let Ok(aml) = pollster::block_on(flashthing::AmlogicSoC::connect(None)) else {
       tracing::error!("could not find device!");
       panic!("could not find device!");
     };
 
-    match aml.unbrick() {
+    match pollster::block_on(aml.unbrick()) {
       Ok(()) => tracing::info!("done!"),
       Err(err) => tracing::error!("failed to unbrick device: {}", err),
     }
@@ -58,12 +58,12 @@ fn main() {
   }
 
   if let Some(cmd) = args.bulkcmd {
-    let Ok(aml) = flashthing::AmlogicSoC::init(None) else {
+    let Ok(aml) = pollster::block_on(flashthing::AmlogicSoC::connect(None)) else {
       tracing::error!("could not find device!");
       std::process::exit(1);
     };
 
-    match aml.bulkcmd(&cmd) {
+    match pollster::block_on(aml.bulkcmd(&cmd)) {
       Ok(response) => print!("{}", response),
       Err(err) => {
         tracing::error!("bulkcmd failed: {}", err);
@@ -77,31 +77,31 @@ fn main() {
     .path
     .unwrap_or_else(|| env::current_dir().expect("could not determine current directory"));
 
-  match flash(path, args.stock) {
+  match pollster::block_on(flash(path, args.stock)) {
     Ok(()) => tracing::info!("done!"),
     Err(err) => tracing::error!("failed to flash device: {}", err),
   }
 }
 
-fn flash(path: PathBuf, stock: bool) -> flashthing::Result<()> {
+async fn flash(path: PathBuf, stock: bool) -> flashthing::Result<()> {
   let mut device = if path.is_file() && path.extension() == Some(OsStr::new("zip")) {
     if stock {
-      Flasher::from_stock_archive(path, None)?
+      Flasher::from_stock_archive(path, None).await?
     } else {
-      Flasher::from_archive(path, None)?
+      Flasher::from_archive(path, None).await?
     }
   } else if path.is_dir() {
     if stock {
-      Flasher::from_stock_directory(path, None)?
+      Flasher::from_stock_directory(path, None).await?
     } else {
-      Flasher::from_directory(path, None)?
+      Flasher::from_directory(path, None).await?
     }
   } else {
     tracing::error!("could not find anything to flash!");
     panic!("could not find anything to flash!");
   };
 
-  device.flash()?;
+  device.flash().await?;
 
   Ok(())
 }

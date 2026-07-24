@@ -1,8 +1,8 @@
-use std::{collections::HashMap, fs::read_to_string, io::Read, path::PathBuf};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result, STOCK_META, SUPPORTED_META_VERSION_MAX, SUPPORTED_META_VERSION_MIN, flash::Zip};
+use crate::{Error, Result, SUPPORTED_META_VERSION_MAX, SUPPORTED_META_VERSION_MIN};
 
 /// Configuration for the flashing process
 ///
@@ -34,7 +34,8 @@ impl FlashConfig {
   ///
   /// # Returns
   /// - `Result<Self>`: The loaded configuration or an error
-  pub fn from_directory(path: &PathBuf) -> Result<Self> {
+  #[cfg(not(target_arch = "wasm32"))]
+  pub fn from_directory(path: &std::path::Path) -> Result<Self> {
     if !path.exists() || !path.is_dir() {
       return Err(Error::NotDir(path.to_owned()));
     }
@@ -44,7 +45,7 @@ impl FlashConfig {
       return Err(Error::NoMeta(meta));
     }
 
-    let json = read_to_string(meta)?;
+    let json = std::fs::read_to_string(meta)?;
     let this: FlashConfig = serde_json::from_str(&json)?;
     this.check_config_supported()?;
     Ok(this)
@@ -57,7 +58,10 @@ impl FlashConfig {
   ///
   /// # Returns
   /// - `Result<Self>`: The loaded configuration or an error
-  pub fn from_archive(zip: &mut Zip) -> Result<Self> {
+  #[cfg(not(target_arch = "wasm32"))]
+  pub fn from_archive(zip: &mut crate::native::Zip) -> Result<Self> {
+    use std::io::Read;
+
     let mut meta_file = zip.by_name("meta.json")?;
 
     let mut json = String::new();
@@ -85,8 +89,9 @@ impl FlashConfig {
   ///
   /// # Returns
   /// - `Result<Self>`: The stock configuration or an error
+  #[cfg(not(target_arch = "wasm32"))]
   pub fn from_stock() -> Result<Self> {
-    let this: FlashConfig = serde_json::from_slice(STOCK_META)?;
+    let this: FlashConfig = serde_json::from_slice(crate::STOCK_META)?;
     this.check_config_supported()?;
     Ok(this)
   }

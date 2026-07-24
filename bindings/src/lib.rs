@@ -19,11 +19,10 @@ pub struct FlashThingOptions {
   pub log_level_directive: Option<String>,
 }
 
-// The main FlashThing class
 #[napi]
 pub struct FlashThing {
   callback: FlasherCallbackHandler,
-  flasher: Option<flashthing::Flasher>,
+  flasher: Option<flashthing::Flasher<flashthing::NativeUsb, flashthing::FlashMode>>,
   num_steps: usize,
 }
 
@@ -48,7 +47,10 @@ impl FlashThing {
   #[napi]
   pub async unsafe fn open_directory(&mut self, path: String) -> Result<()> {
     let path_buf = PathBuf::from(path);
-    match flashthing::Flasher::from_directory(path_buf, Some(self.callback.clone())) {
+    match pollster::block_on(flashthing::Flasher::from_directory(
+      path_buf,
+      Some(self.callback.clone()),
+    )) {
       Ok(flasher) => {
         self.num_steps = flasher.num_steps();
         self.flasher = Some(flasher);
@@ -61,7 +63,7 @@ impl FlashThing {
   #[napi]
   pub async unsafe fn open_archive(&mut self, path: String) -> Result<()> {
     let path_buf = PathBuf::from(path);
-    match flashthing::Flasher::from_archive(path_buf, Some(self.callback.clone())) {
+    match pollster::block_on(flashthing::Flasher::from_archive(path_buf, Some(self.callback.clone()))) {
       Ok(flasher) => {
         self.num_steps = flasher.num_steps();
         self.flasher = Some(flasher);
@@ -73,7 +75,7 @@ impl FlashThing {
 
   #[napi]
   pub async unsafe fn open_json(&mut self, json: String) -> Result<()> {
-    match flashthing::Flasher::from_json(json, Some(self.callback.clone())) {
+    match pollster::block_on(flashthing::Flasher::from_json(json, Some(self.callback.clone()))) {
       Ok(flasher) => {
         self.num_steps = flasher.num_steps();
         self.flasher = Some(flasher);
@@ -86,7 +88,10 @@ impl FlashThing {
   #[napi]
   pub async unsafe fn open_stock_directory(&mut self, path: String) -> Result<()> {
     let path_buf = PathBuf::from(path);
-    match flashthing::Flasher::from_stock_directory(path_buf, Some(self.callback.clone())) {
+    match pollster::block_on(flashthing::Flasher::from_stock_directory(
+      path_buf,
+      Some(self.callback.clone()),
+    )) {
       Ok(flasher) => {
         self.num_steps = flasher.num_steps();
         self.flasher = Some(flasher);
@@ -99,7 +104,10 @@ impl FlashThing {
   #[napi]
   pub async unsafe fn open_stock_archive(&mut self, path: String) -> Result<()> {
     let path_buf = PathBuf::from(path);
-    match flashthing::Flasher::from_stock_archive(path_buf, Some(self.callback.clone())) {
+    match pollster::block_on(flashthing::Flasher::from_stock_archive(
+      path_buf,
+      Some(self.callback.clone()),
+    )) {
       Ok(flasher) => {
         self.num_steps = flasher.num_steps();
         self.flasher = Some(flasher);
@@ -122,7 +130,7 @@ impl FlashThing {
       return Err(Error::from_reason("Flasher is not initialized".to_string()));
     };
 
-    match flasher.flash() {
+    match pollster::block_on(flasher.flash()) {
       Ok(_) => Ok(()),
       Err(e) => Err(Error::from_reason(format!("Flashing failed: {}", e))),
     }
@@ -131,8 +139,8 @@ impl FlashThing {
   /// Utility method to unbrick a device
   #[napi]
   pub async unsafe fn unbrick(&mut self) -> Result<()> {
-    match flashthing::AmlogicSoC::init(Some(self.callback.clone())) {
-      Ok(aml) => match aml.unbrick() {
+    match pollster::block_on(flashthing::AmlogicSoC::connect(Some(self.callback.clone()))) {
+      Ok(aml) => match pollster::block_on(aml.unbrick()) {
         Ok(()) => Ok(()),
         Err(e) => Err(Error::from_reason(format!("Failed to unbrick: {}", e))),
       },
@@ -143,7 +151,7 @@ impl FlashThing {
   /// Set up host for flashing (this currently only does anything on Linux)
   #[napi]
   pub fn host_setup(&self) -> Result<()> {
-    match flashthing::AmlogicSoC::host_setup() {
+    match flashthing::host_setup() {
       Ok(()) => Ok(()),
       Err(e) => Err(Error::from_reason(format!("Failed to set up host: {}", e))),
     }

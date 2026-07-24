@@ -1,12 +1,4 @@
-use std::{
-  fs::File,
-  io::{BufReader, Cursor, Read},
-  path::PathBuf,
-  thread::sleep,
-  time::Duration,
-};
-
-use zip::ZipArchive;
+use std::time::Duration;
 
 use crate::{
   ADDR_TMP, AmlogicSoC, Callback, Error, Event, Result, TRANSFER_BLOCK_SIZE,
@@ -16,24 +8,10 @@ use crate::{
     WriteSimpleMemoryValue, WriteUserAreaValue,
   },
   partitions::SUPERBIRD_PARTITIONS,
+  payload::{PayloadSource, PayloadStore, inline_source},
+  time::{Instant, sleep},
+  usb::UsbTransport,
 };
-
-/// Type alias for zip archive reading from a file
-pub type Zip = ZipArchive<BufReader<File>>;
-
-/// The mode of operation for the Flasher
-///
-/// This determines how the flasher accesses flash files - from a standalone
-/// JSON string, a directory, or a ZIP archive.
-#[derive(Debug)]
-pub enum FlashMode {
-  /// Using a standalone JSON string as configuration
-  Standalone,
-  /// Using files from a directory
-  Directory(PathBuf),
-  /// Using files from a ZIP archive
-  Archive(ZipArchive<BufReader<File>>),
-}
 
 /// Progress information for flashing operations
 ///
@@ -58,26 +36,43 @@ pub struct FlashProgress {
 ///
 /// This provides high-level operations for loading and flashing firmware
 /// based on a configuration file.
-pub struct Flasher {
-  aml: AmlogicSoC,
-  mode: FlashMode,
+pub struct Flasher<U: UsbTransport, S: PayloadStore> {
+  aml: AmlogicSoC<U>,
+  store: S,
   config: FlashConfig,
 
   step: usize,
   callback: Option<Callback>,
 }
 
-impl Flasher {
+impl<U: UsbTransport, S: PayloadStore> Flasher<U, S> {
+  /// Create a Flasher over an already connected device and a payload store
+  ///
+  /// # Parameters
+  /// - `aml`: connected device
+  /// - `store`: resolves the file references in `config`
+  /// - `config`: the parsed and validated flash configuration
+  /// - `callback`: Optional callback function to receive status updates
+  pub fn new(aml: AmlogicSoC<U>, store: S, config: FlashConfig, callback: Option<Callback>) -> Self {
+    Self {
+      aml,
+      store,
+      config,
+      step: 0,
+      callback,
+    }
+  }
+
   /// Execute the flash process based on the loaded configuration
   ///
   /// This will run through all steps defined in the flash configuration.
   ///
   /// # Returns
   /// - `Result<()>`: Success or an error
-  pub fn flash(&mut self) -> Result<()> {
+  pub async fn flash(&mut self) -> Result<()> {
     tracing::info!("beginning flashing process!");
 
-    // i hate clones like this but i need self to be mutable due to the zip
+    // i hate clones like this but i need self to be mutable due to the store
     let steps = self.config.steps.clone();
     for step in &steps {
       tracing::trace!("starting step: {:?}", step);
@@ -88,24 +83,24 @@ impl Flasher {
       }
 
       let outcome = match step {
-        FlashStep::Identify { variable } => self.identify(variable)?,
-        FlashStep::Bulkcmd { value } => self.bulkcmd(value)?,
-        FlashStep::BulkcmdStat { value, variable } => self.bulkcmd_stat(value, variable)?,
-        FlashStep::Run { value } => self.run(value)?,
-        FlashStep::WriteSimpleMemory { value } => self.write_simple_memory(value)?,
-        FlashStep::WriteLargeMemory { value } => self.write_large_memory(value)?,
-        FlashStep::ReadSimpleMemory { value, variable } => self.read_simple_memory(value, variable)?,
-        FlashStep::ReadLargeMemory { value, variable } => self.read_large_memory(value, variable)?,
-        FlashStep::GetBootAMLC { variable } => self.get_boot_amlc(variable)?,
-        FlashStep::WriteAMLCData { value } => self.write_amlc_data(value)?,
-        FlashStep::Bl2Boot { value } => self.bl2_boot(value)?,
-        FlashStep::ValidatePartitionSize { value, variable } => self.validate_partition_size(value, variable)?,
-        FlashStep::RestorePartition { value } => self.restore_partition(value)?,
-        FlashStep::WriteBootPartition { value } => self.write_boot_partition(value)?,
-        FlashStep::WriteUserArea { value } => self.write_user_area(value)?,
-        FlashStep::WriteEnv { value } => self.write_env(value)?,
+        FlashStep::Identify { variable } => self.identify(variable).await?,
+        FlashStep::Bulkcmd { value } => self.bulkcmd(value).await?,
+        FlashStep::BulkcmdStat { value, variable } => self.bulkcmd_stat(value, variable).await?,
+        FlashStep::Run { value } => self.run(value).await?,
+        FlashStep::WriteSimpleMemory { value } => self.write_simple_memory(value).await?,
+        FlashStep::WriteLargeMemory { value } => self.write_large_memory(value).await?,
+        FlashStep::ReadSimpleMemory { value, variable } => self.read_simple_memory(value, variable).await?,
+        FlashStep::ReadLargeMemory { value, variable } => self.read_large_memory(value, variable).await?,
+        FlashStep::GetBootAMLC { variable } => self.get_boot_amlc(variable).await?,
+        FlashStep::WriteAMLCData { value } => self.write_amlc_data(value).await?,
+        FlashStep::Bl2Boot { value } => self.bl2_boot(value).await?,
+        FlashStep::ValidatePartitionSize { value, variable } => self.validate_partition_size(value, variable).await?,
+        FlashStep::RestorePartition { value } => self.restore_partition(value).await?,
+        FlashStep::WriteBootPartition { value } => self.write_boot_partition(value).await?,
+        FlashStep::WriteUserArea { value } => self.write_user_area(value).await?,
+        FlashStep::WriteEnv { value } => self.write_env(value).await?,
         FlashStep::Log { value } => self.log(value)?,
-        FlashStep::Wait { value } => self.wait(value)?,
+        FlashStep::Wait { value } => self.wait(value).await?,
       };
 
       match outcome {
@@ -118,54 +113,54 @@ impl Flasher {
     Ok(())
   }
 
-  fn identify(&self, variable: &Option<String>) -> Result<FlashOutcome> {
+  async fn identify(&self, variable: &Option<String>) -> Result<FlashOutcome> {
     tracing::debug!("running identify with variable {:?}", variable);
-    let start_time = std::time::Instant::now();
-    let result = self.aml.identify();
+    let start_time = Instant::now();
+    let result = self.aml.identify().await;
     let elapsed = start_time.elapsed();
     tracing::trace!("identify completed in {:?}", elapsed);
     Ok(FlashOutcome::IdentifyResult(result?))
   }
 
-  fn bulkcmd(&self, value: &str) -> Result<FlashOutcome> {
+  async fn bulkcmd(&self, value: &str) -> Result<FlashOutcome> {
     tracing::debug!("running bulkcmd with value {:?}", value);
-    let start_time = std::time::Instant::now();
-    let result = self.aml.bulkcmd(value);
+    let start_time = Instant::now();
+    let result = self.aml.bulkcmd(value).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("bulkcmd completed in {:?}", elapsed);
     result?;
     Ok(FlashOutcome::Normal)
   }
 
-  fn bulkcmd_stat(&self, value: &str, variable: &Option<String>) -> Result<FlashOutcome> {
+  async fn bulkcmd_stat(&self, value: &str, variable: &Option<String>) -> Result<FlashOutcome> {
     tracing::debug!(
       "running bulkcmd_stat with value {:?} and variable {:?}",
       value,
       variable
     );
-    let start_time = std::time::Instant::now();
-    let result = self.aml.bulkcmd(value);
+    let start_time = Instant::now();
+    let result = self.aml.bulkcmd(value).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("bulkcmd_stat completed in {:?}", elapsed);
     Ok(FlashOutcome::BulkcmdStatResult(result?))
   }
 
-  fn run(&self, value: &RunValue) -> Result<FlashOutcome> {
+  async fn run(&self, value: &RunValue) -> Result<FlashOutcome> {
     tracing::debug!("running run with value {:?}", value);
-    let start_time = std::time::Instant::now();
-    let result = self.aml.run(value.address, value.keep_power);
+    let start_time = Instant::now();
+    let result = self.aml.run(value.address, value.keep_power).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("run completed in {:?}", elapsed);
     result?;
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_simple_memory(&mut self, value: &WriteSimpleMemoryValue) -> Result<FlashOutcome> {
+  async fn write_simple_memory(&mut self, value: &WriteSimpleMemoryValue) -> Result<FlashOutcome> {
     tracing::debug!("running write_simple_memory with value {:?}", value);
-    let data = self.handle_data_or_file(&value.data)?;
+    let data = read_payload(&value.data, &mut self.store).await?;
 
-    let start_time = std::time::Instant::now();
-    let result = self.aml.write_simple_memory(value.address, &data);
+    let start_time = Instant::now();
+    let result = self.aml.write_simple_memory(value.address, &data).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("write_simple_memory completed in {:?}", elapsed);
 
@@ -173,11 +168,11 @@ impl Flasher {
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_large_memory(&mut self, value: &WriteLargeMemoryValue) -> Result<FlashOutcome> {
+  async fn write_large_memory(&mut self, value: &WriteLargeMemoryValue) -> Result<FlashOutcome> {
     tracing::debug!("running write_large_memory with value {:?}", value);
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
-    let (file_size, mut file) = handle_data_or_file_stream(&value.data, &mut self.mode)?;
+    let (file_size, mut source) = open_payload(&value.data, &mut self.store).await?;
 
     let caller_callback = self.callback.clone();
     let progress_callback = |progress: FlashProgress| {
@@ -186,64 +181,70 @@ impl Flasher {
       };
     };
 
-    self.aml.write_large_memory_to_disk(
-      value.address,
-      &mut file,
-      file_size,
-      value.block_length,
-      value.append_zeros.unwrap_or(true),
-      progress_callback,
-    )?;
+    self
+      .aml
+      .write_large_memory_to_disk(
+        value.address,
+        source.as_mut(),
+        file_size,
+        value.block_length,
+        value.append_zeros.unwrap_or(true),
+        progress_callback,
+      )
+      .await?;
 
     let elapsed = start_time.elapsed();
     tracing::trace!("write_large_memory completed in {:?}", elapsed);
     Ok(FlashOutcome::Normal)
   }
 
-  fn read_simple_memory(&self, value: &ReadMemoryValue, variable: &Option<String>) -> Result<FlashOutcome> {
+  async fn read_simple_memory(&self, value: &ReadMemoryValue, variable: &Option<String>) -> Result<FlashOutcome> {
     tracing::debug!(
       "running read_simple_memory with value {:?} and variable {:?}",
       value,
       variable
     );
-    let start_time = std::time::Instant::now();
-    let result = self.aml.read_simple_memory(value.address, value.length);
+    let start_time = Instant::now();
+    let result = self.aml.read_simple_memory(value.address, value.length).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("read_simple_memory completed in {:?}", elapsed);
     result?;
     Ok(FlashOutcome::Normal)
   }
 
-  fn read_large_memory(&self, value: &ReadMemoryValue, variable: &Option<String>) -> Result<FlashOutcome> {
+  async fn read_large_memory(&self, value: &ReadMemoryValue, variable: &Option<String>) -> Result<FlashOutcome> {
     tracing::debug!(
       "running read_large_memory with value {:?} and variable {:?}",
       value,
       variable
     );
-    let start_time = std::time::Instant::now();
-    let result = self.aml.read_memory(value.address, value.length);
+    let start_time = Instant::now();
+    let result = self.aml.read_memory(value.address, value.length).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("read_large_memory completed in {:?}", elapsed);
     result?;
     Ok(FlashOutcome::Normal)
   }
 
-  fn get_boot_amlc(&self, variable: &Option<String>) -> Result<FlashOutcome> {
+  async fn get_boot_amlc(&self, variable: &Option<String>) -> Result<FlashOutcome> {
     tracing::debug!("running get_boot_amlc with variable {:?}", variable);
-    let start_time = std::time::Instant::now();
-    let result = self.aml.get_boot_amlc();
+    let start_time = Instant::now();
+    let result = self.aml.get_boot_amlc().await;
     let elapsed = start_time.elapsed();
     tracing::trace!("get_boot_amlc completed in {:?}", elapsed);
     result?;
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_amlc_data(&mut self, value: &WriteAMLCDataValue) -> Result<FlashOutcome> {
+  async fn write_amlc_data(&mut self, value: &WriteAMLCDataValue) -> Result<FlashOutcome> {
     tracing::debug!("running write_amlc_data with value {:?}", value);
-    let data = self.handle_data_or_file(&value.data)?;
+    let data = read_payload(&value.data, &mut self.store).await?;
 
-    let start_time = std::time::Instant::now();
-    let result = self.aml.write_amlc_data_packet(value.seq, value.amlc_offset, &data);
+    let start_time = Instant::now();
+    let result = self
+      .aml
+      .write_amlc_data_packet(value.seq, value.amlc_offset, &data)
+      .await;
     let elapsed = start_time.elapsed();
     tracing::trace!("write_amlc_data completed in {:?}", elapsed);
 
@@ -251,13 +252,13 @@ impl Flasher {
     Ok(FlashOutcome::Normal)
   }
 
-  fn bl2_boot(&mut self, value: &BL2BootValue) -> Result<FlashOutcome> {
+  async fn bl2_boot(&mut self, value: &BL2BootValue) -> Result<FlashOutcome> {
     tracing::debug!("running bl2_boot with value {:?}", value);
-    let bl2 = self.handle_data_or_file(&value.bl2)?;
-    let bootloader = self.handle_data_or_file(&value.bootloader)?;
+    let bl2 = read_payload(&value.bl2, &mut self.store).await?;
+    let bootloader = read_payload(&value.bootloader, &mut self.store).await?;
 
-    let start_time = std::time::Instant::now();
-    let result = self.aml.bl2_boot(Some(&bl2), Some(&bootloader));
+    let start_time = Instant::now();
+    let result = self.aml.bl2_boot(&bl2, &bootloader).await;
     let elapsed = start_time.elapsed();
     tracing::trace!("bl2_boot completed in {:?}", elapsed);
 
@@ -265,7 +266,7 @@ impl Flasher {
     Ok(FlashOutcome::Normal)
   }
 
-  fn validate_partition_size(
+  async fn validate_partition_size(
     &self,
     value: &ValidatePartitionSizeValue,
     variable: &Option<String>,
@@ -285,7 +286,7 @@ impl Flasher {
       }
     };
 
-    match self.aml.validate_partition_size(part_name, part_info) {
+    match self.aml.validate_partition_size(part_name, part_info).await {
       Ok(part_size) => {
         let part_offset = part_info.offset;
         Ok(FlashOutcome::ValidatePartitionResult(
@@ -297,16 +298,19 @@ impl Flasher {
     }
   }
 
-  fn restore_partition(&mut self, value: &RestorePartitionValue) -> Result<FlashOutcome> {
+  async fn restore_partition(&mut self, value: &RestorePartitionValue) -> Result<FlashOutcome> {
     tracing::debug!("running restore_partition with value {:?}", value);
 
     let part_name = &value.name;
-    let validate_result = match self.validate_partition_size(
-      &ValidatePartitionSizeValue {
-        name: part_name.clone(),
-      },
-      &None,
-    )? {
+    let validate_result = match self
+      .validate_partition_size(
+        &ValidatePartitionSizeValue {
+          name: part_name.clone(),
+        },
+        &None,
+      )
+      .await?
+    {
       FlashOutcome::ValidatePartitionResult(size, offset) => (size, offset),
       _ => (None, None),
     };
@@ -316,7 +320,7 @@ impl Flasher {
       _ => return Err(Error::InvalidOperation("Failed to validate partition size!".into())),
     };
 
-    let (file_size, file_reader) = handle_data_or_file_stream(&value.data, &mut self.mode)?;
+    let (file_size, mut source) = open_payload(&value.data, &mut self.store).await?;
 
     let caller_callback = self.callback.clone();
     let progress_callback = |progress: FlashProgress| {
@@ -327,25 +331,26 @@ impl Flasher {
 
     self
       .aml
-      .restore_partition(part_name, part_size, file_reader, file_size, progress_callback)?;
+      .restore_partition(part_name, part_size, source.as_mut(), file_size, progress_callback)
+      .await?;
 
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_boot_partition(&mut self, value: &WriteBootPartitionValue) -> Result<FlashOutcome> {
+  async fn write_boot_partition(&mut self, value: &WriteBootPartitionValue) -> Result<FlashOutcome> {
     tracing::debug!("running write_boot_partition with value {:?}", value);
-    let data = self.handle_data_or_file(&value.data)?;
+    let data = read_payload(&value.data, &mut self.store).await?;
 
-    let start_time = std::time::Instant::now();
-    self.aml.write_boot_partition(value.hwpart, &data)?;
+    let start_time = Instant::now();
+    self.aml.write_boot_partition(value.hwpart, &data).await?;
     tracing::trace!("write_boot_partition completed in {:?}", start_time.elapsed());
 
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_user_area(&mut self, value: &WriteUserAreaValue) -> Result<FlashOutcome> {
+  async fn write_user_area(&mut self, value: &WriteUserAreaValue) -> Result<FlashOutcome> {
     tracing::debug!("running write_user_area with value {:?}", value);
-    let (file_size, file) = handle_data_or_file_stream(&value.data, &mut self.mode)?;
+    let (file_size, mut source) = open_payload(&value.data, &mut self.store).await?;
 
     let caller_callback = self.callback.clone();
     let progress_callback = |progress: FlashProgress| {
@@ -354,19 +359,26 @@ impl Flasher {
       };
     };
 
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     self
       .aml
-      .write_user_area(value.lba, file, file_size, value.sparse.unwrap_or(false), progress_callback)?;
+      .write_user_area(
+        value.lba,
+        source.as_mut(),
+        file_size,
+        value.sparse.unwrap_or(false),
+        progress_callback,
+      )
+      .await?;
     tracing::trace!("write_user_area completed in {:?}", start_time.elapsed());
 
     Ok(FlashOutcome::Normal)
   }
 
-  fn write_env(&mut self, value: &StringOrFile) -> Result<FlashOutcome> {
+  async fn write_env(&mut self, value: &StringOrFile) -> Result<FlashOutcome> {
     tracing::debug!("running write_env with value {:?}", value);
 
-    let env_data = self.handle_string_or_file(value)?;
+    let env_data = read_text(value, &mut self.store).await?;
 
     if !env_data.is_ascii() {
       return Err(Error::InvalidOperation("env data must be ascii".into()));
@@ -374,19 +386,21 @@ impl Flasher {
 
     let env_data_bytes = env_data.as_bytes();
     let env_size = env_data_bytes.len();
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
     tracing::debug!("initializing env subsystem");
-    self.aml.bulkcmd("amlmmc env")?;
+    self.aml.bulkcmd("amlmmc env").await?;
 
     tracing::debug!("sending env ({} bytes)", env_size);
     self
       .aml
-      .write_large_memory(ADDR_TMP, env_data_bytes, TRANSFER_BLOCK_SIZE, true)?;
+      .write_large_memory(ADDR_TMP, env_data_bytes, TRANSFER_BLOCK_SIZE, true)
+      .await?;
 
     self
       .aml
-      .bulkcmd(&format!("env import -t {:#X} {:#X}", ADDR_TMP, env_size))?;
+      .bulkcmd(&format!("env import -t {:#X} {:#X}", ADDR_TMP, env_size))
+      .await?;
 
     let elapsed = start_time.elapsed();
     tracing::trace!("write_env completed in {:?}", elapsed);
@@ -400,76 +414,13 @@ impl Flasher {
     Ok(FlashOutcome::Normal)
   }
 
-  fn wait(&self, value: &WaitValue) -> Result<FlashOutcome> {
+  async fn wait(&self, value: &WaitValue) -> Result<FlashOutcome> {
     tracing::debug!("running wait with value {:?}", value);
     match value {
       WaitValue::UserInput { .. } => panic!("wait for user input is not supported!"),
-      WaitValue::Time { time } => sleep(Duration::from_millis(*time)),
+      WaitValue::Time { time } => sleep(Duration::from_millis(*time)).await,
     }
     Ok(FlashOutcome::Normal)
-  }
-
-  fn handle_data_or_file(&mut self, data_or_file: &DataOrFile) -> Result<Vec<u8>> {
-    tracing::debug!("handling data or file {:?}", data_or_file);
-    match data_or_file {
-      DataOrFile::Data(data) => Ok(data.to_owned()),
-      DataOrFile::File(file) => match &mut self.mode {
-        FlashMode::Standalone => {
-          tracing::warn!("trying to read a file in standalone mode!!");
-          let mut file = File::open(PathBuf::from(&file.file_path))?;
-          let mut data = vec![];
-          file.read_to_end(&mut data)?;
-          Ok(data)
-        }
-        FlashMode::Directory(path) => {
-          let path = path.join(&file.file_path);
-          let mut file = File::open(path)?;
-          let mut data = vec![];
-          file.read_to_end(&mut data)?;
-          Ok(data)
-        }
-        FlashMode::Archive(zip) => {
-          let file_name = if file.file_path.starts_with("./") {
-            file.file_path.replacen("./", "", 1)
-          } else {
-            file.file_path.clone()
-          };
-          let mut found = zip.by_name(&file_name)?;
-          let mut data = vec![];
-          found.read_to_end(&mut data)?;
-          Ok(data)
-        }
-      },
-    }
-  }
-
-  fn handle_string_or_file(&mut self, string_or_file: &StringOrFile) -> Result<String> {
-    tracing::debug!("handling string or file {:?}", string_or_file);
-    match string_or_file {
-      StringOrFile::String(data) => Ok(data.clone()),
-      StringOrFile::File(file) => match &mut self.mode {
-        FlashMode::Standalone => {
-          tracing::warn!("trying to read a string file in standalone mode");
-          let path = PathBuf::from(&file.file_path);
-          std::fs::read_to_string(path).map_err(Error::from)
-        }
-        FlashMode::Directory(base_path) => {
-          let path = base_path.join(&file.file_path);
-          std::fs::read_to_string(path).map_err(Error::from)
-        }
-        FlashMode::Archive(zip) => {
-          let file_name = if file.file_path.starts_with("./") {
-            file.file_path.replacen("./", "", 1)
-          } else {
-            file.file_path.clone()
-          };
-          let mut zip_file = zip.by_name(&file_name)?;
-          let mut data = String::new();
-          zip_file.read_to_string(&mut data)?;
-          Ok(data)
-        }
-      },
-    }
   }
 
   /// get the total number of steps in the flash config
@@ -481,24 +432,29 @@ impl Flasher {
   pub fn current_step(&self) -> usize {
     self.step + 1
   }
+}
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Flasher<crate::native::NativeUsb, crate::native::FlashMode> {
   /// Create a new Flasher where the flash files are relative to the `cwd`.
   /// `path` MUST be the path to a directory.
   ///
   /// NOTE: Car Thing is expected to be plugged in at time of creation.
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to a directory
-  pub fn from_directory(path: PathBuf, callback: Option<Callback>) -> Result<Self> {
+  /// - `path`: [std::path::PathBuf] path to a directory
+  pub async fn from_directory(path: std::path::PathBuf, callback: Option<Callback>) -> Result<Self> {
     tracing::debug!("creating new flasher from directory at {:?}", &path);
 
-    Ok(Self {
-      config: FlashConfig::from_directory(&path)?,
-      mode: FlashMode::Directory(path),
-      aml: AmlogicSoC::init(callback.clone())?,
-      step: 0,
+    let config = FlashConfig::from_directory(&path)?;
+    let aml = AmlogicSoC::connect(callback.clone()).await?;
+
+    Ok(Self::new(
+      aml,
+      crate::native::FlashMode::Directory(path),
+      config,
       callback,
-    })
+    ))
   }
 
   /// Create a new Flasher where the zip archive is relative to the `cwd`.
@@ -507,24 +463,15 @@ impl Flasher {
   /// NOTE: Car Thing is expected to be plugged in at time of creation.
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to the zip archive
-  pub fn from_archive(path: PathBuf, callback: Option<Callback>) -> Result<Self> {
+  /// - `path`: [std::path::PathBuf] path to the zip archive
+  pub async fn from_archive(path: std::path::PathBuf, callback: Option<Callback>) -> Result<Self> {
     tracing::debug!("creating new flasher from archive at {:?}", &path);
 
-    if !path.exists() || !path.is_file() {
-      return Err(Error::NotFound);
-    }
+    let mut zip = open_zip(&path)?;
+    let config = FlashConfig::from_archive(&mut zip)?;
+    let aml = AmlogicSoC::connect(callback.clone()).await?;
 
-    let reader = BufReader::new(File::open(&path)?);
-    let mut zip = ZipArchive::new(reader)?;
-
-    Ok(Self {
-      config: FlashConfig::from_archive(&mut zip)?,
-      mode: FlashMode::Archive(zip),
-      aml: AmlogicSoC::init(callback.clone())?,
-      step: 0,
-      callback,
-    })
+    Ok(Self::new(aml, crate::native::FlashMode::Archive(zip), config, callback))
   }
 
   /// Create a new Flasher from a standalone `meta.json`.
@@ -534,16 +481,13 @@ impl Flasher {
   ///
   /// # Parameters
   /// - `meta`: [String] stringified json
-  pub fn from_json(meta: String, callback: Option<Callback>) -> Result<Self> {
+  pub async fn from_json(meta: String, callback: Option<Callback>) -> Result<Self> {
     tracing::debug!("creating new flasher from json string {:?}", &meta);
 
-    Ok(Self {
-      mode: FlashMode::Standalone,
-      config: FlashConfig::from_standalone(&meta)?,
-      aml: AmlogicSoC::init(callback.clone())?,
-      step: 0,
-      callback,
-    })
+    let config = FlashConfig::from_standalone(&meta)?;
+    let aml = AmlogicSoC::connect(callback.clone()).await?;
+
+    Ok(Self::new(aml, crate::native::FlashMode::Standalone, config, callback))
   }
 
   /// Create a new Flasher where the flash files are relative to the `cwd`.
@@ -552,17 +496,19 @@ impl Flasher {
   /// NOTE: Car Thing is expected to be plugged in at time of creation.
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to a directory
-  pub fn from_stock_directory(path: PathBuf, callback: Option<Callback>) -> Result<Self> {
+  /// - `path`: [std::path::PathBuf] path to a directory
+  pub async fn from_stock_directory(path: std::path::PathBuf, callback: Option<Callback>) -> Result<Self> {
     tracing::debug!("creating new flasher from directory at {:?}", &path);
 
-    Ok(Self {
-      config: FlashConfig::from_stock()?,
-      mode: FlashMode::Directory(path),
-      aml: AmlogicSoC::init(callback.clone())?,
-      step: 0,
+    let config = FlashConfig::from_stock()?;
+    let aml = AmlogicSoC::connect(callback.clone()).await?;
+
+    Ok(Self::new(
+      aml,
+      crate::native::FlashMode::Directory(path),
+      config,
       callback,
-    })
+    ))
   }
 
   /// Create a new Flasher where the zip archive is relative to the `cwd`.
@@ -571,57 +517,52 @@ impl Flasher {
   /// NOTE: Car Thing is expected to be plugged in at time of creation.
   ///
   /// # Parameters
-  /// - `path`: [PathBuf] path to the zip archive
-  pub fn from_stock_archive(path: PathBuf, callback: Option<Callback>) -> Result<Self> {
+  /// - `path`: [std::path::PathBuf] path to the zip archive
+  pub async fn from_stock_archive(path: std::path::PathBuf, callback: Option<Callback>) -> Result<Self> {
     tracing::debug!("creating new flasher from archive at {:?}", &path);
 
-    if !path.exists() || !path.is_file() {
-      return Err(Error::NotFound);
-    }
+    let zip = open_zip(&path)?;
+    let config = FlashConfig::from_stock()?;
+    let aml = AmlogicSoC::connect(callback.clone()).await?;
 
-    let reader = BufReader::new(File::open(&path)?);
-    let zip = ZipArchive::new(reader)?;
-
-    Ok(Self {
-      config: FlashConfig::from_stock()?,
-      mode: FlashMode::Archive(zip),
-      aml: AmlogicSoC::init(callback.clone())?,
-      step: 0,
-      callback,
-    })
+    Ok(Self::new(aml, crate::native::FlashMode::Archive(zip), config, callback))
   }
 }
 
-fn handle_data_or_file_stream<'a>(
-  data_or_file: &'a DataOrFile,
-  mode: &'a mut FlashMode,
-) -> Result<(usize, Box<dyn Read + 'a>)> {
+#[cfg(not(target_arch = "wasm32"))]
+fn open_zip(path: &std::path::Path) -> Result<crate::native::Zip> {
+  if !path.exists() || !path.is_file() {
+    return Err(Error::NotFound);
+  }
+
+  let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+  Ok(zip::ZipArchive::new(reader)?)
+}
+
+async fn read_payload<S: PayloadStore>(data_or_file: &DataOrFile, store: &mut S) -> Result<Vec<u8>> {
   tracing::debug!("handling data or file {:?}", data_or_file);
   match data_or_file {
-    DataOrFile::Data(data) => Ok((data.len(), Box::new(Cursor::new(data)))),
-    DataOrFile::File(file) => match mode {
-      FlashMode::Standalone => {
-        tracing::warn!("trying to read a file in standalone mode!!");
-        let file_path = PathBuf::from(&file.file_path);
-        let file = File::open(file_path)?;
-        Ok((file.metadata()?.len() as usize, Box::new(BufReader::new(file))))
-      }
-      FlashMode::Directory(path) => {
-        let file_path = path.join(&file.file_path);
-        let file = File::open(file_path)?;
-        Ok((file.metadata()?.len() as usize, Box::new(BufReader::new(file))))
-      }
-      FlashMode::Archive(zip) => {
-        let file_name = if file.file_path.starts_with("./") {
-          &file.file_path.replacen("./", "", 1)
-        } else {
-          &file.file_path
-        };
+    DataOrFile::Data(data) => Ok(data.to_owned()),
+    DataOrFile::File(file) => store.read_all(&file.file_path).await,
+  }
+}
 
-        let file = zip.by_name(file_name)?;
-        Ok((file.size() as usize, Box::new(file)))
-      }
-    },
+async fn read_text<S: PayloadStore>(string_or_file: &StringOrFile, store: &mut S) -> Result<String> {
+  tracing::debug!("handling string or file {:?}", string_or_file);
+  match string_or_file {
+    StringOrFile::String(data) => Ok(data.clone()),
+    StringOrFile::File(file) => Ok(String::from_utf8(store.read_all(&file.file_path).await?)?),
+  }
+}
+
+async fn open_payload<'a, S: PayloadStore>(
+  data_or_file: &'a DataOrFile,
+  store: &'a mut S,
+) -> Result<(usize, Box<dyn PayloadSource + 'a>)> {
+  tracing::debug!("handling data or file {:?}", data_or_file);
+  match data_or_file {
+    DataOrFile::Data(data) => Ok((data.len(), inline_source(data))),
+    DataOrFile::File(file) => store.open(&file.file_path).await,
   }
 }
 

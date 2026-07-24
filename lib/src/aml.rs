@@ -1,73 +1,63 @@
-use std::{io::Read, sync::Arc, thread::sleep, time::Duration};
-
-use rusb::{Context, DeviceHandle, Direction, UsbContext};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
-  ADDR_BL2, ADDR_TMP, AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, BL2_BIN, BOOTLOADER_BIN,
-  Callback, Error, Event, FLAG_KEEP_POWER_ON, PART_SECTOR_SIZE, PRODUCT_ID, REQ_BULKCMD, REQ_GET_AMLC,
-  REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR, REQ_WR_LARGE_MEM, REQ_WRITE_AMLC, REQ_WRITE_MEM, Result,
-  TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD, UNBRICK_BIN_ZIP, VENDOR_ID, flash::FlashProgress,
+  ADDR_BL2, ADDR_TMP, AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, Callback, Error, Event,
+  FLAG_KEEP_POWER_ON, PART_SECTOR_SIZE, REQ_BULKCMD, REQ_GET_AMLC, REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR,
+  REQ_WR_LARGE_MEM, REQ_WRITE_AMLC, REQ_WRITE_MEM, Result, TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD,
+  flash::FlashProgress,
   partitions::PartitionInfo,
+  payload::PayloadSource,
+  time::{Instant, sleep},
+  usb::{COMMAND_TIMEOUT, UsbTransport},
 };
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Debug)]
-struct AmlInner {
-  handle: DeviceHandle<Context>,
-  interface_number: u8,
-  endpoint_in: u8,
-  endpoint_out: u8,
+struct AmlInner<U> {
+  transport: U,
+  callback: Option<Callback>,
 }
 
 /// The main interface for interacting with Amlogic-based hardware
 ///
 /// This provides low-level access to the Amlogic SoC on the Superbird device,
 /// allowing for memory operations, partition management, and firmware flashing.
-#[derive(Clone)]
-pub struct AmlogicSoC {
-  inner: Arc<AmlInner>,
+pub struct AmlogicSoC<U: UsbTransport> {
+  inner: Arc<AmlInner<U>>,
 }
 
-impl AmlogicSoC {
-  /// Initialize a connection to an Amlogic SoC device
+impl<U: UsbTransport> Clone for AmlogicSoC<U> {
+  fn clone(&self) -> Self {
+    Self {
+      inner: self.inner.clone(),
+    }
+  }
+}
+
+impl<U: UsbTransport> AmlogicSoC<U> {
+  /// Bring a device up in USB burn mode and claim it
   ///
-  /// This will search for a connected device, put it in the correct mode if necessary,
-  /// and establish a connection for flashing operations.
+  /// If the device is in USB mode it is booted through BL2 first, then reclaimed once it re-enumerates.
   ///
   /// # Parameters
+  /// - `transport`: the USB backend to drive the device through
+  /// - `bl2`: BL2 binary, used only when the device still needs to leave USB mode
+  /// - `bootloader`: bootloader binary streamed to the SoC during the BL2 sequence
   /// - `callback`: Optional callback function to receive status updates
   ///
   /// # Returns
   /// - `Result<Self>`: A connected AmlogicSoC instance or an error
-  pub fn init(callback: Option<Callback>) -> Result<Self> {
+  pub async fn init(transport: U, bl2: &[u8], bootloader: &[u8], callback: Option<Callback>) -> Result<Self> {
     if let Some(callback) = &callback {
       callback(Event::FindingDevice);
     };
 
-    let mode = find_device();
+    let mode = transport.mode().await;
     if let Some(callback) = &callback {
       callback(Event::DeviceMode(mode));
     };
 
     match mode {
-      DeviceMode::Usb => {
-        tracing::info!("device booted in usb mode - moving to usb burn mode");
-        let device = Self::connect(callback.clone())?;
-        if let Some(callback) = &callback {
-          callback(Event::Bl2Boot);
-        };
-
-        device.bl2_boot(None, None)?;
-        drop(device);
-
-        if let Some(callback) = &callback {
-          callback(Event::Resetting);
-        };
-
-        tracing::debug!("device successfully moved to usb burn mode, sleeping then grabbing new handle");
-        sleep(Duration::from_millis(5000));
-      }
+      DeviceMode::Usb => tracing::info!("device booted in usb mode - moving to usb burn mode"),
       DeviceMode::UsbBurn => tracing::info!("device found!"),
       DeviceMode::Normal => {
         tracing::error!(
@@ -81,80 +71,23 @@ impl AmlogicSoC {
       }
     };
 
-    let mut attempts = 0;
-    while attempts < 3 {
-      match Self::connect(callback.clone()) {
-        Ok(dev) => return Ok(dev),
-        Err(e) => {
-          tracing::debug!("failed to connect to device: {}. Attempt {}/3", e, attempts + 1);
-          attempts += 1;
-          sleep(Duration::from_secs(1));
-        }
-      }
+    transport.acquire().await?;
+
+    let device = Self {
+      inner: Arc::new(AmlInner { transport, callback }),
+    };
+
+    if mode == DeviceMode::Usb {
+      device.bl2_boot(bl2, bootloader).await?;
     }
 
-    Self::connect(callback)
+    Ok(device)
   }
 
-  fn connect(callback: Option<Callback>) -> Result<Self> {
-    tracing::debug!("connecting to Amlogic device");
-    if let Some(callback) = &callback {
-      callback(Event::Connecting);
+  fn emit(&self, event: Event) {
+    if let Some(callback) = &self.inner.callback {
+      callback(event);
     };
-
-    let context = Context::new()?;
-    let handle = {
-      let device = context
-        .devices()?
-        .iter()
-        .find(|device| {
-          if let Ok(desc) = device.device_descriptor() {
-            desc.vendor_id() == VENDOR_ID && desc.product_id() == PRODUCT_ID
-          } else {
-            false
-          }
-        })
-        .ok_or_else(|| Error::InvalidOperation("Device not found".into()))?;
-      device.open()?
-    };
-
-    handle.set_active_configuration(1)?;
-    let interface_number: u8 = 0;
-    handle.claim_interface(interface_number)?;
-
-    let device = handle.device();
-    let config_desc = device.active_config_descriptor()?;
-    let interface = config_desc
-      .interfaces()
-      .find(|i| i.number() == interface_number)
-      .ok_or_else(|| Error::InvalidOperation("Interface not found".into()))?;
-    let descriptor = interface
-      .descriptors()
-      .next()
-      .ok_or_else(|| Error::InvalidOperation("No alt setting".into()))?;
-    let mut endpoint_in = None;
-    let mut endpoint_out = None;
-    for ep in descriptor.endpoint_descriptors() {
-      match ep.direction() {
-        Direction::In => endpoint_in = Some(ep.address()),
-        Direction::Out => endpoint_out = Some(ep.address()),
-      }
-    }
-    let endpoint_in = endpoint_in.ok_or_else(|| Error::InvalidOperation("IN endpoint not found".into()))?;
-    let endpoint_out = endpoint_out.ok_or_else(|| Error::InvalidOperation("OUT endpoint not found".into()))?;
-    tracing::info!("device connected, claiming interface {}", interface_number);
-    if let Some(callback) = &callback {
-      callback(Event::Connected);
-    };
-
-    Ok(Self {
-      inner: Arc::new(AmlInner {
-        handle,
-        interface_number,
-        endpoint_in,
-        endpoint_out,
-      }),
-    })
   }
 
   /// Write data to device memory
@@ -169,7 +102,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_simple_memory(&self, address: u32, data: &[u8]) -> Result<()> {
+  pub async fn write_simple_memory(&self, address: u32, data: &[u8]) -> Result<()> {
     tracing::debug!(
       "writing simple memory at address: {:#X}, length: {}",
       address,
@@ -182,8 +115,9 @@ impl AmlogicSoC {
     let index = (address & 0xffff) as u16;
     self
       .inner
-      .handle
-      .write_control(0x40, REQ_WRITE_MEM, value, index, data, COMMAND_TIMEOUT)?;
+      .transport
+      .control_out(REQ_WRITE_MEM, value, index, data, COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!(
       "write_control completed for write_simple_memory at address: {:#X}",
       address
@@ -202,7 +136,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_memory(&self, address: u32, data: &[u8]) -> Result<()> {
+  pub async fn write_memory(&self, address: u32, data: &[u8]) -> Result<()> {
     tracing::debug!(
       "writing memory starting at address: {:#X} with total length: {}",
       address,
@@ -212,7 +146,9 @@ impl AmlogicSoC {
     let length = data.len();
     while offset < length {
       let chunk_size = std::cmp::min(64, length - offset);
-      self.write_simple_memory(address + offset as u32, &data[offset..offset + chunk_size])?;
+      self
+        .write_simple_memory(address + offset as u32, &data[offset..offset + chunk_size])
+        .await?;
       tracing::trace!(
         "chunk written for write_memory at address: {:#X}, new offset: {}",
         address,
@@ -235,7 +171,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<Vec<u8>>`: The read data or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn read_simple_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
+  pub async fn read_simple_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
     tracing::debug!(
       "reading simple memory at address: {:#X} with length: {}",
       address,
@@ -252,8 +188,9 @@ impl AmlogicSoC {
     let mut buf = vec![0u8; length];
     let read = self
       .inner
-      .handle
-      .read_control(0xC0, REQ_READ_MEM, value, index, &mut buf, COMMAND_TIMEOUT)?;
+      .transport
+      .control_in(REQ_READ_MEM, value, index, &mut buf, COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!(
       "read_control completed for read_simple_memory at address: {:#X}, bytes read: {}",
       address,
@@ -276,13 +213,13 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<Vec<u8>>`: The read data or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn read_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
+  pub async fn read_memory(&self, address: u32, length: usize) -> Result<Vec<u8>> {
     tracing::debug!("reading memory at address: {:#X} with length: {}", address, length);
     let mut data = vec![0u8; length];
     let mut offset = 0;
     while offset < length {
       let read_length = std::cmp::min(64, length - offset);
-      let chunk = self.read_simple_memory(address + offset as u32, read_length)?;
+      let chunk = self.read_simple_memory(address + offset as u32, read_length).await?;
       data[offset..offset + read_length].copy_from_slice(&chunk);
       tracing::trace!(
         "chunk read for read_memory at address: {:#X}, offset: {}",
@@ -303,7 +240,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn run(&self, address: u32, keep_power: Option<bool>) -> Result<()> {
+  pub async fn run(&self, address: u32, keep_power: Option<bool>) -> Result<()> {
     let keep_power = keep_power.unwrap_or(true);
     tracing::debug!("running at address: {:#X} with keep_power: {}", address, keep_power);
     let data = if keep_power {
@@ -316,8 +253,9 @@ impl AmlogicSoC {
     let index = (address & 0xffff) as u16;
     self
       .inner
-      .handle
-      .write_control(0x40, REQ_RUN_IN_ADDR, value, index, &buffer, COMMAND_TIMEOUT)?;
+      .transport
+      .control_out(REQ_RUN_IN_ADDR, value, index, &buffer, COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!("run command sent at address: {:#X}", address);
     Ok(())
   }
@@ -327,13 +265,14 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<String>`: The device identification string or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn identify(&self) -> Result<String> {
+  pub async fn identify(&self) -> Result<String> {
     tracing::debug!("identifying device");
     let mut buf = [0u8; 8];
     let read = self
       .inner
-      .handle
-      .read_control(0xC0, REQ_IDENTIFY_HOST, 0, 0, &mut buf, COMMAND_TIMEOUT)?;
+      .transport
+      .control_in(REQ_IDENTIFY_HOST, 0, 0, &mut buf, COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!("identify response received: {:?} ({} bytes)", &buf, read);
     if read != 8 {
       return Err(Error::InvalidOperation("Failed to read identify data".into()));
@@ -354,7 +293,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_large_memory(
+  pub async fn write_large_memory(
     &self,
     memory_address: u32,
     data: &[u8],
@@ -389,14 +328,17 @@ impl AmlogicSoC {
     control_data.extend_from_slice(&0u32.to_le_bytes());
 
     tracing::trace!("writing control data: {:?}", &control_data);
-    self.inner.handle.write_control(
-      0x40,
-      REQ_WR_LARGE_MEM,
-      block_length as u16,
-      block_count,
-      &control_data,
-      COMMAND_TIMEOUT,
-    )?;
+    self
+      .inner
+      .transport
+      .control_out(
+        REQ_WR_LARGE_MEM,
+        block_length as u16,
+        block_count,
+        &control_data,
+        COMMAND_TIMEOUT,
+      )
+      .await?;
 
     let mut data_offset = 0;
     while data_offset < data_vec.len() {
@@ -406,8 +348,9 @@ impl AmlogicSoC {
 
       self
         .inner
-        .handle
-        .write_bulk(self.inner.endpoint_out, chunk, Duration::from_millis(2000))?;
+        .transport
+        .bulk_out(chunk, Duration::from_millis(2000))
+        .await?;
 
       tracing::trace!(target: "flashthing::aml::write_large_memory", "wrote actual data from offset: {:#X}", &data_offset);
 
@@ -421,7 +364,7 @@ impl AmlogicSoC {
   ///
   /// # Parameters
   /// - `disk_address`: The disk address to write to
-  /// - `reader`: A reader providing the data to write
+  /// - `source`: The payload providing the data to write
   /// - `data_size`: The total size of data to write
   /// - `block_length`: The size of each block to transfer
   /// - `append_zeros`: Whether to pad data with zeros to match block_length
@@ -430,10 +373,10 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_large_memory_to_disk<R: std::io::Read, F: Fn(FlashProgress)>(
+  pub async fn write_large_memory_to_disk<F: Fn(FlashProgress)>(
     &self,
     disk_address: u32,
-    reader: &mut R,
+    source: &mut dyn PayloadSource,
     data_size: usize,
     block_length: usize,
     append_zeros: bool,
@@ -441,13 +384,13 @@ impl AmlogicSoC {
   ) -> Result<()> {
     tracing::debug!("streaming {} bytes to disk address: {:#X}", data_size, disk_address);
 
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let mut total_chunks = 0;
     let mut avg_chunk_time_secs = 0.0;
 
     // needed for write operations
-    self.bulkcmd("mmc dev 1")?;
-    self.bulkcmd("amlmmc key")?;
+    self.bulkcmd("mmc dev 1").await?;
+    self.bulkcmd("amlmmc key").await?;
 
     let total_len = data_size;
     let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
@@ -455,32 +398,36 @@ impl AmlogicSoC {
     let mut buffer = vec![0u8; max_bytes_per_transfer];
 
     while offset < total_len {
-      let chunk_start_time = std::time::Instant::now();
+      let chunk_start_time = Instant::now();
 
       let remaining = total_len - offset;
       let write_length = std::cmp::min(remaining, max_bytes_per_transfer);
 
-      let data_slice = &mut buffer[..write_length];
-      reader.read_exact(data_slice)?;
+      source.read_exact(&mut buffer[..write_length]).await?;
 
-      self.write_large_memory(ADDR_TMP, &buffer[..write_length], block_length, append_zeros)?;
+      self
+        .write_large_memory(ADDR_TMP, &buffer[..write_length], block_length, append_zeros)
+        .await?;
 
-      let start_time_cmd = std::time::Instant::now();
+      let start_time_cmd = Instant::now();
       let mut retries = 0;
       let max_retries = 3;
 
       loop {
-        match self.bulkcmd(&format!(
-          "mmc write {:#X} {:#X} {:#X}",
-          ADDR_TMP,
-          (disk_address as usize + offset) / 512,
-          write_length / 512
-        )) {
+        match self
+          .bulkcmd(&format!(
+            "mmc write {:#X} {:#X} {:#X}",
+            ADDR_TMP,
+            (disk_address as usize + offset) / 512,
+            write_length / 512
+          ))
+          .await
+        {
           Ok(_) => {
             let elapsed = start_time_cmd.elapsed();
             if elapsed > Duration::from_millis(3000) {
               tracing::debug!("mmc write command took {}ms, cooling down for 5s", elapsed.as_millis());
-              sleep(Duration::from_secs(5));
+              sleep(Duration::from_secs(5)).await;
             }
             break;
           }
@@ -489,7 +436,7 @@ impl AmlogicSoC {
             if retries >= max_retries {
               return Err(e);
             }
-            sleep(Duration::from_secs(5)); // cooldown after error
+            sleep(Duration::from_secs(5)).await; // cooldown after error
           }
         }
       }
@@ -559,17 +506,20 @@ impl AmlogicSoC {
   }
 
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_amlc_data(&self, offset: u32, data: &[u8]) -> Result<()> {
+  pub async fn write_amlc_data(&self, offset: u32, data: &[u8]) -> Result<()> {
     tracing::debug!("writing amlc data at offset: {:#X} with length: {}", offset, data.len());
 
-    self.inner.handle.write_control(
-      0x40,
-      REQ_WRITE_AMLC,
-      (offset / AMLC_AMLS_BLOCK_LENGTH as u32) as u16,
-      (data.len() - 1) as u16,
-      &[],
-      COMMAND_TIMEOUT,
-    )?;
+    self
+      .inner
+      .transport
+      .control_out(
+        REQ_WRITE_AMLC,
+        (offset / AMLC_AMLS_BLOCK_LENGTH as u32) as u16,
+        (data.len() - 1) as u16,
+        &[],
+        COMMAND_TIMEOUT,
+      )
+      .await?;
     tracing::trace!("amlc header sent for data write at offset: {:#X}", offset);
 
     let max_chunk_size = AMLC_MAX_BLOCK_LENGTH;
@@ -588,11 +538,7 @@ impl AmlogicSoC {
       let mut success = false;
 
       while !success && retries < max_retries {
-        match self
-          .inner
-          .handle
-          .write_bulk(self.inner.endpoint_out, chunk, bulk_timeout)
-        {
+        match self.inner.transport.bulk_out(chunk, bulk_timeout).await {
           Ok(written) => {
             if written == block_length {
               success = true;
@@ -610,16 +556,16 @@ impl AmlogicSoC {
                 max_retries
               );
               retries += 1;
-              sleep(Duration::from_millis(100));
+              sleep(Duration::from_millis(100)).await;
             }
           }
           Err(e) => {
             tracing::warn!("Error in bulk write: {}. Retry {}/{}", e, retries + 1, max_retries);
             retries += 1;
-            sleep(Duration::from_millis(100));
+            sleep(Duration::from_millis(100)).await;
 
             if retries >= max_retries {
-              return Err(Error::UsbError(e));
+              return Err(e);
             }
           }
         }
@@ -628,7 +574,7 @@ impl AmlogicSoC {
       data_offset += block_length;
       remaining -= block_length;
 
-      sleep(Duration::from_millis(10));
+      sleep(Duration::from_millis(10)).await;
     }
 
     let mut ack_buf = [0u8; 16];
@@ -637,11 +583,7 @@ impl AmlogicSoC {
     let mut read = 0;
 
     while retries < max_retries {
-      match self
-        .inner
-        .handle
-        .read_bulk(self.inner.endpoint_in, &mut ack_buf, bulk_timeout)
-      {
+      match self.inner.transport.bulk_in(&mut ack_buf, bulk_timeout).await {
         Ok(bytes_read) => {
           read = bytes_read;
           if read >= 4 {
@@ -654,7 +596,7 @@ impl AmlogicSoC {
         }
       }
       retries += 1;
-      sleep(Duration::from_millis(100));
+      sleep(Duration::from_millis(100)).await;
     }
 
     tracing::trace!("received amlc ack: {:?} ({} bytes)", &ack_buf[..read], read);
@@ -672,7 +614,7 @@ impl AmlogicSoC {
   }
 
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_amlc_data_packet(&self, seq: u8, amlc_offset: u32, data: &[u8]) -> Result<()> {
+  pub async fn write_amlc_data_packet(&self, seq: u8, amlc_offset: u32, data: &[u8]) -> Result<()> {
     tracing::debug!("writing amlc data packet, seq: {}, offset: {:#X}", seq, amlc_offset);
 
     let data_len = data.len();
@@ -691,8 +633,10 @@ impl AmlogicSoC {
           write_length
         );
 
-        self.write_amlc_data(offset as u32, &data[offset..offset + write_length])?;
-        sleep(Duration::from_millis(50));
+        self
+          .write_amlc_data(offset as u32, &data[offset..offset + write_length])
+          .await?;
+        sleep(Duration::from_millis(50)).await;
 
         offset += write_length;
       }
@@ -714,28 +658,22 @@ impl AmlogicSoC {
     }
 
     tracing::debug!("sending AMLS block with seq {} to offset {:#X}", seq, amlc_offset);
-    self.write_amlc_data(amlc_offset, &amlc_data)?;
+    self.write_amlc_data(amlc_offset, &amlc_data).await?;
 
     Ok(())
   }
 
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn get_boot_amlc(&self) -> Result<(u32, u32)> {
+  pub async fn get_boot_amlc(&self) -> Result<(u32, u32)> {
     tracing::debug!("getting boot amlc data");
-    self.inner.handle.write_control(
-      0x40,
-      REQ_GET_AMLC,
-      AMLC_AMLS_BLOCK_LENGTH as u16,
-      0,
-      &[],
-      COMMAND_TIMEOUT,
-    )?;
+    self
+      .inner
+      .transport
+      .control_out(REQ_GET_AMLC, AMLC_AMLS_BLOCK_LENGTH as u16, 0, &[], COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!("amlc get request sent");
     let mut buf = vec![0u8; AMLC_AMLS_BLOCK_LENGTH];
-    let read = self
-      .inner
-      .handle
-      .read_bulk(self.inner.endpoint_in, &mut buf, Duration::from_secs(2))?;
+    let read = self.inner.transport.bulk_in(&mut buf, Duration::from_secs(2)).await?;
     tracing::trace!("amlc data received, length: {}", read);
     if read < AMLC_AMLS_BLOCK_LENGTH {
       return Err(Error::InvalidOperation("No amlc data received".into()));
@@ -748,10 +686,7 @@ impl AmlogicSoC {
     let offset = u32::from_le_bytes(buf[12..16].try_into()?);
     let mut ack = [0u8; 16];
     ack[..4].copy_from_slice(b"OKAY");
-    self
-      .inner
-      .handle
-      .write_bulk(self.inner.endpoint_out, &ack, Duration::from_secs(2))?;
+    self.inner.transport.bulk_out(&ack, Duration::from_secs(2)).await?;
     tracing::trace!("acknowledgment sent for amlc data");
     Ok((length, offset))
   }
@@ -788,27 +723,27 @@ impl AmlogicSoC {
 
   /// Execute the BL2 boot sequence
   ///
-  /// This boots the device using the specified BL2 and bootloader binaries.
+  /// This boots the device using the specified BL2 and bootloader binaries, then waits out the reset
+  /// and claims the device again under its USB burn mode identity.
   ///
   /// # Parameters
-  /// - `bl2`: Optional BL2 binary data (uses built-in if None)
-  /// - `bootloader`: Optional bootloader binary data (uses built-in if None)
+  /// - `bl2`: BL2 binary data
+  /// - `bootloader`: bootloader binary data
   ///
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn bl2_boot(&self, bl2: Option<&[u8]>, bootloader: Option<&[u8]>) -> Result<()> {
-    let bl2 = bl2.unwrap_or(BL2_BIN);
-    let bootloader = bootloader.unwrap_or(BOOTLOADER_BIN);
+  pub async fn bl2_boot(&self, bl2: &[u8], bootloader: &[u8]) -> Result<()> {
+    self.emit(Event::Bl2Boot);
 
     tracing::info!("sending bl2 binary to address {:#X}...", ADDR_BL2);
-    self.write_large_memory(ADDR_BL2, bl2, 4096, true)?;
+    self.write_large_memory(ADDR_BL2, bl2, 4096, true).await?;
 
     tracing::info!("booting from bl2...");
-    self.run(ADDR_BL2, Some(true))?;
+    self.run(ADDR_BL2, Some(true)).await?;
 
     tracing::debug!("waiting for bootloader to initialize...");
-    sleep(Duration::from_secs(2));
+    sleep(Duration::from_secs(2)).await;
 
     let mut prev_length: u32 = 0;
     let mut prev_offset: u32 = 0;
@@ -828,7 +763,7 @@ impl AmlogicSoC {
 
       let mut retry_count = 0;
       let (length, offset) = loop {
-        match self.get_boot_amlc() {
+        match self.get_boot_amlc().await {
           Ok(result) => break result,
           Err(e) => {
             retry_count += 1;
@@ -837,7 +772,7 @@ impl AmlogicSoC {
               return Err(e);
             }
             tracing::warn!("failed to get boot amlc, retry {}/{}: {}", retry_count, max_retries, e);
-            sleep(Duration::from_millis(500));
+            sleep(Duration::from_millis(500)).await;
           }
         }
       };
@@ -859,20 +794,26 @@ impl AmlogicSoC {
           bootloader.len()
         );
         let empty_slice = &[];
-        self.write_amlc_data_packet(seq, offset, empty_slice)?;
+        self.write_amlc_data_packet(seq, offset, empty_slice).await?;
       } else {
         let actual_length = std::cmp::min(length as usize, bootloader.len() - offset as usize);
         let data_slice = &bootloader[offset as usize..offset as usize + actual_length];
 
         tracing::debug!("sending {} bytes at offset {} with seq {}", actual_length, offset, seq);
-        self.write_amlc_data_packet(seq, offset, data_slice)?;
+        self.write_amlc_data_packet(seq, offset, data_slice).await?;
       }
 
       seq = seq.wrapping_add(1);
-      sleep(Duration::from_millis(100));
+      sleep(Duration::from_millis(100)).await;
     }
 
     tracing::info!("bl2 boot sequence completed successfully!");
+
+    self.emit(Event::Resetting);
+    tracing::debug!("device successfully moved to usb burn mode, sleeping then grabbing new handle");
+    sleep(Duration::from_millis(5000)).await;
+    self.inner.transport.acquire().await?;
+
     Ok(())
   }
 
@@ -884,21 +825,19 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<String>`: The command response or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn bulkcmd(&self, command: &str) -> Result<String> {
+  pub async fn bulkcmd(&self, command: &str) -> Result<String> {
     tracing::debug!("sending bulk command: {:?}", command);
     let mut command = command.as_bytes().to_vec();
     command.push(0x00);
     self
       .inner
-      .handle
-      .write_control(0x40, REQ_BULKCMD, 0, 0, &command, COMMAND_TIMEOUT)?;
+      .transport
+      .control_out(REQ_BULKCMD, 0, 0, &command, COMMAND_TIMEOUT)
+      .await?;
     tracing::trace!("bulk command control write completed");
 
     let mut buf = vec![0u8; 512];
-    let read = self
-      .inner
-      .handle
-      .read_bulk(self.inner.endpoint_in, &mut buf, COMMAND_TIMEOUT)?;
+    let read = self.inner.transport.bulk_in(&mut buf, COMMAND_TIMEOUT).await?;
     tracing::trace!("bulk command response received, length: {}", read);
 
     if read == 0 {
@@ -927,7 +866,7 @@ impl AmlogicSoC {
   /// # Returns
   /// - `Result<usize>`: The validated partition size or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn validate_partition_size(&self, part_name: &str, part_info: &PartitionInfo) -> Result<usize> {
+  pub async fn validate_partition_size(&self, part_name: &str, part_info: &PartitionInfo) -> Result<usize> {
     tracing::debug!("validating partition size for partition: {}", part_name);
 
     if part_name == "cache" {
@@ -949,13 +888,16 @@ impl AmlogicSoC {
     );
 
     // Try to read the last sector
-    match self.bulkcmd(&format!(
-      "amlmmc read {} {:#x} {:#x} {:#x}",
-      part_name,
-      ADDR_TMP,
-      part_size - PART_SECTOR_SIZE,
-      PART_SECTOR_SIZE
-    )) {
+    match self
+      .bulkcmd(&format!(
+        "amlmmc read {} {:#x} {:#x} {:#x}",
+        part_name,
+        ADDR_TMP,
+        part_size - PART_SECTOR_SIZE,
+        PART_SECTOR_SIZE
+      ))
+      .await
+    {
       Ok(_) => {
         tracing::info!(
           "Validating size of partition: {} size: {:#x} {}MB - OK",
@@ -992,13 +934,16 @@ impl AmlogicSoC {
             alt_size / 1024 / 1024
           );
 
-          match self.bulkcmd(&format!(
-            "amlmmc read {} {:#x} {:#x} {:#x}",
-            part_name,
-            ADDR_TMP,
-            alt_size - PART_SECTOR_SIZE,
-            PART_SECTOR_SIZE
-          )) {
+          match self
+            .bulkcmd(&format!(
+              "amlmmc read {} {:#x} {:#x} {:#x}",
+              part_name,
+              ADDR_TMP,
+              alt_size - PART_SECTOR_SIZE,
+              PART_SECTOR_SIZE
+            ))
+            .await
+          {
             Ok(_) => {
               tracing::info!(
                 "Validating size of partition: {} size: {:#x} {}MB - OK",
@@ -1046,7 +991,7 @@ impl AmlogicSoC {
   /// - `hwpart`: 1 for boot0, 2 for boot1.
   /// - `data`: payload (signed boot.bin). Capped at `TRANSFER_SIZE_THRESHOLD`.
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_boot_partition(&self, hwpart: u8, data: &[u8]) -> Result<()> {
+  pub async fn write_boot_partition(&self, hwpart: u8, data: &[u8]) -> Result<()> {
     if !(1..=2).contains(&hwpart) {
       return Err(Error::InvalidOperation(format!(
         "boot hwpart must be 1 or 2, got {hwpart}"
@@ -1062,23 +1007,27 @@ impl AmlogicSoC {
 
     tracing::info!("writing {} bytes to boot{}", data.len(), hwpart - 1);
 
-    self.bulkcmd(&format!("mmc dev 1 {hwpart}"))?;
-    self.bulkcmd("amlmmc key")?;
+    self.bulkcmd(&format!("mmc dev 1 {hwpart}")).await?;
+    self.bulkcmd("amlmmc key").await?;
 
-    self.write_large_memory(ADDR_TMP, data, TRANSFER_BLOCK_SIZE, true)?;
+    self
+      .write_large_memory(ADDR_TMP, data, TRANSFER_BLOCK_SIZE, true)
+      .await?;
 
     let sector_count = data.len().div_ceil(PART_SECTOR_SIZE);
-    self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} 0 {sector_count:#X}"))?;
+    self
+      .bulkcmd(&format!("mmc write {ADDR_TMP:#X} 0 {sector_count:#X}"))
+      .await?;
 
-    self.bulkcmd("mmc dev 1 0")?;
+    self.bulkcmd("mmc dev 1 0").await?;
     Ok(())
   }
 
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn write_user_area<R: Read, F: Fn(FlashProgress)>(
+  pub async fn write_user_area<F: Fn(FlashProgress)>(
     &self,
     lba_offset: u32,
-    mut reader: R,
+    source: &mut dyn PayloadSource,
     data_size: usize,
     sparse: bool,
     progress_callback: F,
@@ -1090,12 +1039,12 @@ impl AmlogicSoC {
       sparse
     );
 
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let mut total_chunks = 0;
     let mut avg_chunk_time_secs = 0.0;
 
-    self.bulkcmd("mmc dev 1 0")?;
-    self.bulkcmd("amlmmc key")?;
+    self.bulkcmd("mmc dev 1 0").await?;
+    self.bulkcmd("amlmmc key").await?;
 
     if sparse {
       let total_sectors = data_size.div_ceil(PART_SECTOR_SIZE);
@@ -1104,7 +1053,9 @@ impl AmlogicSoC {
         total_sectors,
         lba_offset
       );
-      self.bulkcmd(&format!("mmc erase {lba_offset:#X} {total_sectors:#X}"))?;
+      self
+        .bulkcmd(&format!("mmc erase {lba_offset:#X} {total_sectors:#X}"))
+        .await?;
     }
 
     let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
@@ -1112,13 +1063,12 @@ impl AmlogicSoC {
     let mut buffer = vec![0u8; max_bytes_per_transfer];
 
     while offset < data_size {
-      let chunk_start_time = std::time::Instant::now();
+      let chunk_start_time = Instant::now();
 
       let remaining = data_size - offset;
       let write_length = std::cmp::min(remaining, max_bytes_per_transfer);
 
-      let data_slice = &mut buffer[..write_length];
-      reader.read_exact(data_slice)?;
+      source.read_exact(&mut buffer[..write_length]).await?;
 
       let skip = sparse && buffer[..write_length].iter().all(|&b| b == 0);
       if skip {
@@ -1127,20 +1077,25 @@ impl AmlogicSoC {
           lba_offset as usize + offset / PART_SECTOR_SIZE
         );
       } else {
-        self.write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)?;
+        self
+          .write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)
+          .await?;
 
         let chunk_lba = lba_offset as usize + offset / PART_SECTOR_SIZE;
         let chunk_sectors = write_length / PART_SECTOR_SIZE;
 
-        let cmd_start = std::time::Instant::now();
+        let cmd_start = Instant::now();
         let mut retries = 0;
         let max_retries = 3;
         loop {
-          match self.bulkcmd(&format!("mmc write {ADDR_TMP:#X} {chunk_lba:#X} {chunk_sectors:#X}")) {
+          match self
+            .bulkcmd(&format!("mmc write {ADDR_TMP:#X} {chunk_lba:#X} {chunk_sectors:#X}"))
+            .await
+          {
             Ok(_) => {
               if cmd_start.elapsed() > Duration::from_millis(3000) {
                 tracing::debug!("mmc write took {}ms, cooling down 5s", cmd_start.elapsed().as_millis());
-                sleep(Duration::from_secs(5));
+                sleep(Duration::from_secs(5)).await;
               }
               break;
             }
@@ -1155,7 +1110,7 @@ impl AmlogicSoC {
                 max_retries,
                 e
               );
-              sleep(Duration::from_secs(5));
+              sleep(Duration::from_secs(5)).await;
             }
           }
         }
@@ -1216,18 +1171,18 @@ impl AmlogicSoC {
   /// # Parameters
   /// - `part_name`: The name of the partition to restore
   /// - `part_size`: The size of the partition
-  /// - `reader`: A reader providing the partition data
+  /// - `source`: The payload providing the partition data
   /// - `file_size`: The size of the data being read
   /// - `progress_callback`: Function to call with progress updates
   ///
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn restore_partition<R: Read, F: Fn(FlashProgress)>(
+  pub async fn restore_partition<F: Fn(FlashProgress)>(
     &self,
     part_name: &str,
     part_size: usize,
-    mut reader: R,
+    source: &mut dyn PayloadSource,
     file_size: usize,
     progress_callback: F,
   ) -> Result<()> {
@@ -1246,11 +1201,11 @@ impl AmlogicSoC {
       )));
     }
 
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let mut total_chunks = 0;
     let mut avg_chunk_time_secs = 0.0;
 
-    self.bulkcmd("amlmmc key")?;
+    self.bulkcmd("amlmmc key").await?;
 
     let total_len = file_size;
     let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
@@ -1258,40 +1213,47 @@ impl AmlogicSoC {
     let mut buffer = vec![0u8; max_bytes_per_transfer];
 
     while offset < total_len {
-      let chunk_start_time = std::time::Instant::now();
+      let chunk_start_time = Instant::now();
 
       let remaining = total_len - offset;
       let write_length = std::cmp::min(remaining, max_bytes_per_transfer);
 
-      let data_slice = &mut buffer[..write_length];
-      reader.read_exact(data_slice)?;
+      source.read_exact(&mut buffer[..write_length]).await?;
 
-      self.write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)?;
+      self
+        .write_large_memory(ADDR_TMP, &buffer[..write_length], TRANSFER_BLOCK_SIZE, true)
+        .await?;
 
-      let start_time_cmd = std::time::Instant::now();
+      let start_time_cmd = Instant::now();
       let mut retries = 0;
       let max_retries = 3;
 
       if part_name == "bootloader" {
-        match self.bulkcmd(&format!(
-          "amlmmc write {} {:#x} {:#x} {:#x}",
-          part_name, ADDR_TMP, offset, write_length
-        )) {
+        match self
+          .bulkcmd(&format!(
+            "amlmmc write {} {:#x} {:#x} {:#x}",
+            part_name, ADDR_TMP, offset, write_length
+          ))
+          .await
+        {
           Ok(_) => tracing::debug!("bootloader write succeeded unexpectedly"),
           Err(e) => tracing::debug!("expected timeout for bootloader write: {}", e),
         }
-        sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(2)).await;
       } else {
         loop {
-          match self.bulkcmd(&format!(
-            "amlmmc write {} {:#x} {:#x} {:#x}",
-            part_name, ADDR_TMP, offset, write_length
-          )) {
+          match self
+            .bulkcmd(&format!(
+              "amlmmc write {} {:#x} {:#x} {:#x}",
+              part_name, ADDR_TMP, offset, write_length
+            ))
+            .await
+          {
             Ok(_) => {
               let elapsed = start_time_cmd.elapsed();
               if elapsed > Duration::from_millis(3000) {
                 tracing::debug!("write command took {}ms, cooling down for 5s", elapsed.as_millis());
-                sleep(Duration::from_secs(5));
+                sleep(Duration::from_secs(5)).await;
               }
               break;
             }
@@ -1301,7 +1263,7 @@ impl AmlogicSoC {
                 return Err(e);
               }
               tracing::warn!("write command failed, retrying ({}/{}): {}", retries, max_retries, e);
-              sleep(Duration::from_secs(5));
+              sleep(Duration::from_secs(5)).await;
             }
           }
         }
@@ -1373,15 +1335,43 @@ impl AmlogicSoC {
 
   /// Execute the unbrick procedure
   ///
-  /// This writes the emergency unbrick image to the device.
+  /// This writes the emergency unbrick image over the start of the eMMC.
+  ///
+  /// # Parameters
+  /// - `source`: The payload providing the unpacked unbrick image
+  /// - `size`: The size of the unbrick image
   ///
   /// # Returns
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-  pub fn unbrick(&self) -> Result<()> {
+  pub async fn unbrick_from(&self, source: &mut dyn PayloadSource, size: usize) -> Result<()> {
     tracing::info!("starting unbrick procedure...");
 
-    let cursor = std::io::Cursor::new(UNBRICK_BIN_ZIP);
+    self
+      .write_large_memory_to_disk(0, source, size, TRANSFER_BLOCK_SIZE, true, |progress| {
+        tracing::info!(
+          "unbrick progress: {:.1}% | elapsed: {:.1}s | eta: {:.1}s | rate: {:.2} KB/s | avg rate: {:.2} KB/s",
+          progress.percent,
+          progress.elapsed,
+          progress.eta,
+          progress.rate,
+          progress.avg_rate
+        );
+      })
+      .await?;
+
+    tracing::info!("unbrick procedure completed successfully!");
+    Ok(())
+  }
+
+  /// Execute the unbrick procedure using the unbrick image bundled with this crate
+  ///
+  /// # Returns
+  /// - `Result<()>`: Success or an error
+  #[cfg(not(target_arch = "wasm32"))]
+  #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
+  pub async fn unbrick(&self) -> Result<()> {
+    let cursor = std::io::Cursor::new(crate::UNBRICK_BIN_ZIP);
 
     let mut archive = match zip::ZipArchive::new(cursor) {
       Ok(archive) => archive,
@@ -1391,7 +1381,7 @@ impl AmlogicSoC {
       }
     };
 
-    let mut file = match archive.by_name("unbrick.bin") {
+    let file = match archive.by_name("unbrick.bin") {
       Ok(file) => file,
       Err(e) => {
         tracing::error!("failed to find unbrick.bin in zip archive: {}", e);
@@ -1400,42 +1390,38 @@ impl AmlogicSoC {
     };
 
     let file_size = file.size() as usize;
-    self.write_large_memory_to_disk(0, &mut file, file_size, TRANSFER_BLOCK_SIZE, true, |progress| {
-      tracing::info!(
-        "unbrick progress: {:.1}% | elapsed: {:.1}s | eta: {:.1}s | rate: {:.2} KB/s | avg rate: {:.2} KB/s",
-        progress.percent,
-        progress.elapsed,
-        progress.eta,
-        progress.rate,
-        progress.avg_rate
-      );
-    })?;
-
-    tracing::info!("unbrick procedure completed successfully!");
-    Ok(())
-  }
-
-  /// Set up the host environment for USB access
-  ///
-  /// On Linux, this creates udev rules to allow access to the device.
-  ///
-  /// # Returns
-  /// - `Result<()>`: Success or an error
-  pub fn host_setup() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    crate::setup::setup_host_linux()?;
-
-    Ok(())
+    let mut source = crate::payload::BlockingSource(file);
+    self.unbrick_from(&mut source, file_size).await
   }
 }
 
-impl Drop for AmlogicSoC {
-  fn drop(&mut self) {
-    match self.inner.handle.release_interface(self.inner.interface_number) {
-      Ok(()) => tracing::trace!("successfully dropped usb interface"),
-      Err(err) => tracing::warn!("failed to release usb interface: {:?}", err),
-    }
+#[cfg(not(target_arch = "wasm32"))]
+impl AmlogicSoC<crate::native::NativeUsb> {
+  /// Find and claim the locally connected device, BL2 booting it into USB burn mode if needed
+  ///
+  /// # Parameters
+  /// - `callback`: Optional callback function to receive status updates
+  ///
+  /// # Returns
+  /// - `Result<Self>`: A connected AmlogicSoC instance or an error
+  pub async fn connect(callback: Option<Callback>) -> Result<Self> {
+    let transport = crate::native::NativeUsb::new(callback.clone());
+    Self::init(transport, crate::BL2_BIN, crate::BOOTLOADER_BIN, callback).await
   }
+}
+
+/// Set up the host environment for USB access
+///
+/// On Linux, this creates udev rules to allow access to the device.
+///
+/// # Returns
+/// - `Result<()>`: Success or an error
+#[cfg(not(target_arch = "wasm32"))]
+pub fn host_setup() -> Result<()> {
+  #[cfg(target_os = "linux")]
+  crate::setup::setup_host_linux()?;
+
+  Ok(())
 }
 
 /// The current mode of the Superbird device
@@ -1454,69 +1440,15 @@ pub enum DeviceMode {
   NotFound,
 }
 
-#[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
-fn find_device() -> DeviceMode {
-  let context = match Context::new() {
-    Ok(c) => c,
-    Err(_) => return DeviceMode::NotFound,
-  };
-  let devices = match context.devices() {
-    Ok(d) => d,
-    Err(_) => return DeviceMode::NotFound,
-  };
-  for device in devices.iter() {
-    let desc = match device.device_descriptor() {
-      Ok(d) => d,
-      Err(_) => continue,
-    };
-    // Match normal mode: vendor=0x18d1, product=0x4e40
-    if desc.vendor_id() == 0x18d1 && desc.product_id() == 0x4e40 {
-      tracing::debug!("Found device booted normally, with USB Gadget (adb/usbnet) enabled");
-      return DeviceMode::Normal;
-    }
-    // Match USB burn/usb mode: vendor=0x1b8e, product=0xc003
-    if desc.vendor_id() == 0x1b8e && desc.product_id() == 0xc003 {
-      // Attempt to open device and read product string
-      match device.open() {
-        Ok(handle) => {
-          // Common language ID
-          let lang = handle.read_languages(COMMAND_TIMEOUT).unwrap_or_default();
-          let Some(lang) = lang.first() else {
-            tracing::debug!("Found device in USB Burn Mode (unable to read product string)");
-            return DeviceMode::UsbBurn;
-          };
-
-          let prod = handle
-            .read_product_string(*lang, &desc, Duration::from_millis(100))
-            .ok();
-          if prod.as_deref() == Some("GX-CHIP") {
-            tracing::debug!("Found device booted in USB Mode (buttons 1 & 4 held at boot)");
-            return DeviceMode::Usb;
-          } else {
-            tracing::debug!("Found device booted in USB Burn Mode (ready for commands)");
-            return DeviceMode::UsbBurn;
-          }
-        }
-        Err(_) => {
-          tracing::debug!("Found device in USB Burn Mode (unable to read product string)");
-          return DeviceMode::UsbBurn;
-        }
-      }
-    }
-  }
-
-  tracing::debug!("No device found!");
-  DeviceMode::NotFound
-}
-
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
   use super::*;
 
+  // needs a car thing attached in burn mode, so it is opt-in: cargo test -- --ignored
   #[test]
+  #[ignore]
   fn test_amlogic_soc_connect() {
-    let soc = AmlogicSoC::init(None);
-    // This test will only pass if the device is connected
+    let soc = pollster::block_on(AmlogicSoC::connect(None));
     assert!(soc.is_ok());
   }
 }
