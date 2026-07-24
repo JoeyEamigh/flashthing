@@ -5,14 +5,21 @@ set -e
 VERSION=$(cat .version)
 VERSION_WITHOUT_V="${VERSION//v/}"
 
+update_cargo_version() {
+  perl -pi -e "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"$VERSION_WITHOUT_V\"/" "$1"
+}
+
+update_flashthing_dep() {
+  perl -pi -e "s/(flashthing = \{[^}]*version = \")[^\"]+(\")/\${1}$VERSION_WITHOUT_V\${2}/" "$1"
+}
+
 update_cargo_toml() {
-  local file=$1
-  sed -i "s/^version = \"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$VERSION_WITHOUT_V\"/" "$file"
+  update_cargo_version "$1"
+  update_flashthing_dep "$1"
 }
 
 update_package_json() {
-  local file=$1
-  sed -i "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$VERSION_WITHOUT_V\"/" "$file"
+  perl -pi -e "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$VERSION_WITHOUT_V\"/" "$1"
 }
 
 echo "Setting versions to v$VERSION_WITHOUT_V..."

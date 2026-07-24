@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 console_error_panic_hook = "0.1.7"
-flashthing = { version = "0.3.0", path = "../lib" }
+flashthing = { version = "0.4.0", path = "../lib" }
 js-sys = "0.3.103"
 serde_json = "1.0.151"
 tracing.workspace = true
