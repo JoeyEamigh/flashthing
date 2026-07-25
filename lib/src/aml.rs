@@ -1,16 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-  ADDR_BL2, ADDR_TMP, AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, Callback, Error, Event,
-  FLAG_KEEP_POWER_ON, PART_SECTOR_SIZE, REQ_BULKCMD, REQ_GET_AMLC, REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR,
-  REQ_WR_LARGE_MEM, REQ_WRITE_AMLC, REQ_WRITE_MEM, Result, TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD,
+  ADDR_BL2, ADDR_TMP, AMLC_AMLS_BLOCK_LENGTH, AMLC_MAX_BLOCK_LENGTH, AMLC_MAX_TRANSFER_LENGTH, Callback,
+  ERASE_GROUP_SECTORS, Error, Event, FLAG_KEEP_POWER_ON, PART_SECTOR_SIZE, REQ_BULKCMD, REQ_GET_AMLC,
+  REQ_IDENTIFY_HOST, REQ_READ_MEM, REQ_RUN_IN_ADDR, REQ_WR_LARGE_MEM, REQ_WRITE_AMLC, REQ_WRITE_MEM, Result,
+  TRANSFER_BLOCK_SIZE, TRANSFER_SIZE_THRESHOLD,
   flash::FlashProgress,
   partitions::PartitionInfo,
   payload::PayloadSource,
   time::{Instant, sleep},
   usb::{COMMAND_TIMEOUT, UsbTransport},
 };
-
 
 struct AmlInner<U> {
   transport: U,
@@ -1046,16 +1046,23 @@ impl<U: UsbTransport> AmlogicSoC<U> {
     self.bulkcmd("mmc dev 1 0").await?;
     self.bulkcmd("amlmmc key").await?;
 
+    let (mut erased_from, mut erased_to) = (0usize, 0usize);
+
     if sparse {
-      let total_sectors = data_size.div_ceil(PART_SECTOR_SIZE);
-      tracing::info!(
-        "erasing {} sectors at LBA {} before sparse write",
-        total_sectors,
-        lba_offset
-      );
-      self
-        .bulkcmd(&format!("mmc erase {lba_offset:#X} {total_sectors:#X}"))
-        .await?;
+      let span_sectors = data_size.div_ceil(PART_SECTOR_SIZE);
+      let first = lba_offset as usize;
+      let start = first.div_ceil(ERASE_GROUP_SECTORS) * ERASE_GROUP_SECTORS;
+      let end = (first + span_sectors) / ERASE_GROUP_SECTORS * ERASE_GROUP_SECTORS;
+
+      if end > start {
+        let count = end - start;
+        tracing::info!("erasing {} sectors at LBA {} before sparse write", count, start);
+        self.bulkcmd(&format!("mmc erase {start:#X} {count:#X}")).await?;
+        erased_from = (start - first) * PART_SECTOR_SIZE;
+        erased_to = (end - first) * PART_SECTOR_SIZE;
+      } else {
+        tracing::info!("sparse write spans no whole erase group at LBA {first}; writing in full");
+      }
     }
 
     let max_bytes_per_transfer = TRANSFER_SIZE_THRESHOLD;
@@ -1070,7 +1077,8 @@ impl<U: UsbTransport> AmlogicSoC<U> {
 
       source.read_exact(&mut buffer[..write_length]).await?;
 
-      let skip = sparse && buffer[..write_length].iter().all(|&b| b == 0);
+      let erased = offset >= erased_from && offset + write_length <= erased_to;
+      let skip = sparse && erased && buffer[..write_length].iter().all(|&b| b == 0);
       if skip {
         tracing::debug!(
           "skipping all-zero chunk at LBA {:#X}",

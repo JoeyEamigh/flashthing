@@ -294,3 +294,4 @@ const WRITE_MEDIA_CHEKSUM_ALG_CRC32: u16 = 0x00f0;
 // Constants for partition operations
 const PART_SECTOR_SIZE: usize = 512; // bytes, size of sectors used in partition table
 const TRANSFER_BLOCK_SIZE: usize = 8 * PART_SECTOR_SIZE; // 4KB data transferred into memory one block at a time
+const ERASE_GROUP_SECTORS: usize = 8 * 1024; // 4MB, HC_ERASE_GRP_SIZE 0x08 with ERASE_GROUP_DEF set on the superbird emmc
