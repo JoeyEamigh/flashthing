@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://terbium.app/schema/meta/v1.json",
   "title": "Superbird Flash Configuration",
   "description": "Schema for Superbird firmware flashing configuration files",
   "type": "object",
