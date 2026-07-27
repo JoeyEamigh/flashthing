@@ -4,8 +4,8 @@ use js_sys::{Array, Function, Promise, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-  UsbControlTransferParameters, UsbDevice, UsbDirection, UsbInTransferResult, UsbOutTransferResult, UsbRecipient,
-  UsbRequestType, UsbTransferStatus,
+  UsbControlTransferParameters, UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions, UsbDirection, UsbInTransferResult,
+  UsbOutTransferResult, UsbRecipient, UsbRequestType, UsbTransferStatus,
 };
 
 use crate::{
@@ -16,6 +16,68 @@ use crate::{
 };
 
 const INTERFACE_NUMBER: u8 = 0;
+const SUPPORTED: [(u16, u16); 2] = [(VENDOR_ID, PRODUCT_ID), (VENDOR_ID_NORMAL, PRODUCT_ID_NORMAL)];
+const REACQUIRE_ATTEMPTS: usize = 8;
+const REACQUIRE_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Why the page is being asked for a click. Handed to the gesture callback so the UI can explain itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureReason {
+  /// No device has been chosen yet.
+  Initial,
+  /// The device re-enumerated and its old permission no longer applies.
+  Reconnect,
+}
+
+impl GestureReason {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Initial => "initial",
+      Self::Reconnect => "reconnect",
+    }
+  }
+}
+
+fn usb() -> Result<web_sys::Usb> {
+  let window =
+    web_sys::window().ok_or_else(|| Error::InvalidOperation("no window to read navigator.usb from".into()))?;
+  Ok(window.navigator().usb())
+}
+
+fn supported(device: &UsbDevice) -> bool {
+  SUPPORTED
+    .iter()
+    .any(|(vendor, product)| device.vendor_id() == *vendor && device.product_id() == *product)
+}
+
+/// The chooser filter list, built from the same constants [`supported`] matches against.
+fn filters() -> Vec<UsbDeviceFilter> {
+  SUPPORTED
+    .iter()
+    .map(|(vendor, product)| {
+      let filter = UsbDeviceFilter::new();
+      filter.set_vendor_id(*vendor);
+      filter.set_product_id(*product);
+      filter
+    })
+    .collect()
+}
+
+/// A device this origin has already been granted, if one is plugged in.
+async fn already_granted() -> Option<UsbDevice> {
+  let devices = JsFuture::from(usb().ok()?.get_devices()).await.ok()?;
+  Array::from(&devices)
+    .iter()
+    .filter_map(|value| value.dyn_into::<UsbDevice>().ok())
+    .find(supported)
+}
+
+/// The `DOMException` name behind a rejection, which is how the chooser distinguishes a dismissal from a real fault.
+fn error_name(value: &JsValue) -> Option<String> {
+  js_sys::Reflect::get(value, &JsValue::from_str("name"))
+    .ok()
+    .and_then(|name| name.as_string())
+}
 
 fn js_error(value: JsValue) -> Error {
   let message = value
@@ -74,31 +136,72 @@ struct Claimed {
 
 /// [`UsbTransport`] over WebUSB.
 pub struct WebUsb {
-  request_device: Function,
+  await_gesture: Function,
   claimed: RefCell<Option<Claimed>>,
   device: RefCell<Option<UsbDevice>>,
   callback: Option<Callback>,
 }
 
 impl WebUsb {
-  pub fn new(request_device: Function, callback: Option<Callback>) -> Self {
+  pub fn new(await_gesture: Function, callback: Option<Callback>) -> Self {
     Self {
-      request_device,
+      await_gesture,
       claimed: RefCell::new(None),
       device: RefCell::new(None),
       callback,
     }
   }
 
-  async fn next_device(&self) -> Option<UsbDevice> {
-    let promise = self
-      .request_device
-      .call0(&JsValue::NULL)
-      .ok()
-      .and_then(|value| value.dyn_into::<Promise>().ok())?;
+  /// Open the chooser, which the browser only allows while a click the page just handled is still live.
+  ///
+  /// A chooser dismissed without a pick is not fatal: the device may simply not have finished re-enumerating, so ask
+  /// the page for another click. Anything else, a lost user gesture above all, fails rather than spinning.
+  async fn prompt(&self, reason: GestureReason) -> Result<UsbDevice> {
+    loop {
+      let promise = self
+        .await_gesture
+        .call1(&JsValue::NULL, &JsValue::from_str(reason.as_str()))
+        .map_err(js_error)?
+        .dyn_into::<Promise>()
+        .map_err(|_| Error::InvalidOperation("gesture callback did not return a promise".into()))?;
+      JsFuture::from(promise).await.map_err(js_error)?;
 
-    let device = JsFuture::from(promise).await.ok()?;
-    device.dyn_into::<UsbDevice>().ok()
+      match JsFuture::from(usb()?.request_device(&UsbDeviceRequestOptions::new(&filters()))).await {
+        Ok(device) => {
+          return device
+            .dyn_into::<UsbDevice>()
+            .map_err(|_| Error::InvalidOperation("chooser did not return a usb device".into()));
+        }
+        Err(error) => {
+          let name = error_name(&error);
+          tracing::warn!("device chooser rejected with {:?}", name);
+
+          if name.as_deref() != Some("NotFoundError") {
+            return Err(js_error(error));
+          }
+        }
+      }
+    }
+  }
+
+  /// Find a device, asking the page for a click only when the browser gives us no other way.
+  async fn next_device(&self, reason: GestureReason) -> Result<UsbDevice> {
+    if let Some(device) = already_granted().await {
+      return Ok(device);
+    }
+
+    // the amlogic rom reports no serial number, so chromium can only hold its grant against the live connection and
+    // drops it the moment a reset disconnects the device. poll in case this one did survive, then ask for a click.
+    if reason == GestureReason::Reconnect {
+      for _ in 0..REACQUIRE_ATTEMPTS {
+        time::sleep(REACQUIRE_INTERVAL).await;
+        if let Some(device) = already_granted().await {
+          return Ok(device);
+        }
+      }
+    }
+
+    self.prompt(reason).await
   }
 
   async fn known_device(&self) -> Option<UsbDevice> {
@@ -106,7 +209,7 @@ impl WebUsb {
       return Some(device);
     }
 
-    let device = self.next_device().await?;
+    let device = self.next_device(GestureReason::Initial).await.ok()?;
     *self.device.borrow_mut() = Some(device.clone());
     Some(device)
   }
@@ -217,14 +320,20 @@ impl UsbTransport for WebUsb {
       callback(Event::Connecting);
     };
 
+    // having already claimed an interface means this is the far side of a reset, not a cold start.
     let stale = self.claimed.borrow_mut().take();
+    let reason = match &stale {
+      Some(_) => GestureReason::Reconnect,
+      None => GestureReason::Initial,
+    };
+
     if let Some(stale) = stale {
       let _ = JsFuture::from(stale.device.release_interface(INTERFACE_NUMBER)).await;
       let _ = JsFuture::from(stale.device.close()).await;
     }
     self.device.borrow_mut().take();
 
-    let device = self.next_device().await.ok_or(Error::NotFound)?;
+    let device = self.next_device(reason).await?;
     *self.device.borrow_mut() = Some(device.clone());
 
     if !device.opened() {

@@ -1418,6 +1418,23 @@ impl AmlogicSoC<crate::native::NativeUsb> {
   }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl AmlogicSoC<crate::web::WebUsb> {
+  /// Choose and claim a device over WebUSB, BL2 booting it into USB burn mode if needed
+  ///
+  /// # Parameters
+  /// - `await_gesture`: Called with a reason string when the browser needs a click before it will open the device
+  ///   chooser; must resolve once the user has clicked
+  /// - `callback`: Optional callback function to receive status updates
+  ///
+  /// # Returns
+  /// - `Result<Self>`: A connected AmlogicSoC instance or an error
+  pub async fn connect(await_gesture: js_sys::Function, callback: Option<Callback>) -> Result<Self> {
+    let transport = crate::web::WebUsb::new(await_gesture, callback.clone());
+    Self::init(transport, crate::BL2_BIN, crate::BOOTLOADER_BIN, callback).await
+  }
+}
+
 /// Set up the host environment for USB access
 ///
 /// On Linux, this creates udev rules to allow access to the device.

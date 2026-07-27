@@ -401,7 +401,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flashthing"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "js-sys",
  "lazy_static",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "flashthing-cli"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "clap",
  "flashthing",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "flashthing-wasm"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "console_error_panic_hook",
  "flashthing",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "n-flashthing"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "flashthing",
