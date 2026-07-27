@@ -62,6 +62,8 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -103,6 +105,9 @@ jobs:
       - name: Build
         run: cd bindings && ${{ matrix.settings.build }}
         shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: matrix.settings.target != 'wasm32-wasi-preview1-threads'
@@ -215,9 +220,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           tool: wasm-pack
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
       # the webusb bindings sit behind an unstable gate, wired up in .cargo/config.toml
       - name: Build wasm package
         run: cd wasm && wasm-pack build --target web --out-dir pkg
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
       # wasm-pack leaves the license behind even though the crate declares one
       - name: Add license
         run: cp LICENSE wasm/pkg/LICENSE

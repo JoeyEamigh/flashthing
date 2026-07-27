@@ -51,6 +51,9 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
@@ -65,9 +68,13 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: cross build --release --target ${{ matrix.target }} -p flashthing-cli
 
+      # cross compiles inside a container that has no sccache, so the wrapper stays scoped to the host builds
       - name: Build with cargo
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }} -p flashthing-cli
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
 
       - name: Prepare binary
         run: |
