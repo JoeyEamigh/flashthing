@@ -16,6 +16,7 @@ fn device_mode(mode: flashthing::DeviceMode) -> &'static str {
     flashthing::DeviceMode::Normal => "normal",
     flashthing::DeviceMode::Usb => "usb",
     flashthing::DeviceMode::UsbBurn => "usbBurn",
+    flashthing::DeviceMode::Fastboot => "fastboot",
     flashthing::DeviceMode::NotFound => "notFound",
   }
 }

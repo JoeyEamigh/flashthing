@@ -75,17 +75,17 @@ mod setup;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
-/// Configuration types for the flashing process
+pub mod boot_image;
 pub mod config;
-/// Payload sources the flash steps stream their data from
+pub mod fastboot;
 pub mod payload;
-/// The USB backend the Amlogic protocol runs over
 pub mod usb;
 
 use std::sync::Arc;
 
 pub use aml::*;
 use config::FlashStep;
+pub use fastboot::{Fastboot, FastbootFlasher};
 pub use flash::{FlashProgress, Flasher};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{FlashMode, NativeUsb, Zip};
@@ -180,6 +180,10 @@ pub enum Error {
   #[error("bulkcmd failed: {0}")]
   BulkCmdFailed(String),
 
+  /// Error when the device answers a fastboot command with FAIL
+  #[error("fastboot `{command}` failed: {reason}")]
+  Fastboot { command: String, reason: String },
+
   /// Error when the meta.json version is not supported
   #[error("unsupported `meta.json` version: {0}")]
   UnsupportedVersion(usize),
@@ -220,6 +224,7 @@ const SUPPORTED_META_VERSION_MAX: usize = 2;
 
 pub const BL2_BIN: &[u8] = include_bytes!("../resources/superbird.bl2.encrypted.bin");
 pub const BOOTLOADER_BIN: &[u8] = include_bytes!("../resources/superbird.bootloader.img");
+pub const FIP_BIN: &[u8] = include_bytes!("../resources/carthing.fip.bin");
 #[cfg(not(target_arch = "wasm32"))]
 const UNBRICK_BIN_ZIP: &[u8] = include_bytes!("../resources/unbrick.bin.zip");
 #[cfg(not(target_arch = "wasm32"))]
@@ -230,6 +235,9 @@ const PRODUCT_ID: u16 = 0xc003;
 
 const VENDOR_ID_NORMAL: u16 = 0x18d1;
 const PRODUCT_ID_NORMAL: u16 = 0x4e40;
+
+const VENDOR_ID_FASTBOOT: u16 = 0x18d1;
+const PRODUCT_ID_FASTBOOT: u16 = 0xfada;
 
 #[allow(dead_code)]
 const VENDOR_ID_BOOTED: u16 = 0x1d6b;

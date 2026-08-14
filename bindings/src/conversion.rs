@@ -38,6 +38,7 @@ pub enum DeviceMode {
   Normal,
   Usb,
   UsbBurn,
+  Fastboot,
   NotFound,
 }
 
@@ -47,6 +48,7 @@ impl From<flashthing::DeviceMode> for DeviceMode {
       flashthing::DeviceMode::Normal => Self::Normal,
       flashthing::DeviceMode::Usb => Self::Usb,
       flashthing::DeviceMode::UsbBurn => Self::UsbBurn,
+      flashthing::DeviceMode::Fastboot => Self::Fastboot,
       flashthing::DeviceMode::NotFound => Self::NotFound,
     }
   }

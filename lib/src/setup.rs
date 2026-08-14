@@ -2,16 +2,24 @@
 pub fn setup_host_linux() -> crate::Result<()> {
   use std::{fs, path::PathBuf, process::Command};
 
-  use crate::{PRODUCT_ID, PRODUCT_ID_BOOTED, VENDOR_ID, VENDOR_ID_BOOTED};
+  use crate::{PRODUCT_ID, PRODUCT_ID_BOOTED, PRODUCT_ID_FASTBOOT, VENDOR_ID, VENDOR_ID_BOOTED, VENDOR_ID_FASTBOOT};
 
   let rules_path = PathBuf::from("/etc/udev/rules.d/98-superbird.rules");
 
   let username = whoami::username()?;
-  let rules_content = format!(
-    "SUBSYSTEM==\"usb\", ATTRS{{idVendor}}==\"{:04x}\", ATTRS{{idProduct}}==\"{:04x}\", OWNER=\"{}\", MODE=\"0666\"\n\
-       SUBSYSTEM==\"usb\", ATTRS{{idVendor}}==\"{:04x}\", ATTRS{{idProduct}}==\"{:04x}\", OWNER=\"{}\", MODE=\"0666\"\n",
-    VENDOR_ID, PRODUCT_ID, username, VENDOR_ID_BOOTED, PRODUCT_ID_BOOTED, username
-  );
+  let rules_content = [
+    (VENDOR_ID, PRODUCT_ID),
+    (VENDOR_ID_BOOTED, PRODUCT_ID_BOOTED),
+    (VENDOR_ID_FASTBOOT, PRODUCT_ID_FASTBOOT),
+  ]
+  .iter()
+  .map(|(vendor, product)| {
+    format!(
+      "SUBSYSTEM==\"usb\", ATTRS{{idVendor}}==\"{:04x}\", ATTRS{{idProduct}}==\"{:04x}\", OWNER=\"{}\", MODE=\"0666\"\n",
+      vendor, product, username
+    )
+  })
+  .collect::<String>();
 
   let temp_dir = std::env::temp_dir();
   let temp_file_path = temp_dir.join("98-superbird.rules");

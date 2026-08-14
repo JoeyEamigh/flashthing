@@ -9,8 +9,10 @@ use crate::{
   partitions::PartitionInfo,
   payload::PayloadSource,
   time::{Instant, sleep},
-  usb::{COMMAND_TIMEOUT, UsbTransport},
+  usb::{COMMAND_TIMEOUT, UsbTarget, UsbTransport},
 };
+
+pub(crate) const RESET_SETTLE: Duration = Duration::from_millis(5000);
 
 struct AmlInner<U> {
   transport: U,
@@ -18,9 +20,6 @@ struct AmlInner<U> {
 }
 
 /// The main interface for interacting with Amlogic-based hardware
-///
-/// This provides low-level access to the Amlogic SoC on the Superbird device,
-/// allowing for memory operations, partition management, and firmware flashing.
 pub struct AmlogicSoC<U: UsbTransport> {
   inner: Arc<AmlInner<U>>,
 }
@@ -59,6 +58,13 @@ impl<U: UsbTransport> AmlogicSoC<U> {
     match mode {
       DeviceMode::Usb => tracing::info!("device booted in usb mode - moving to usb burn mode"),
       DeviceMode::UsbBurn => tracing::info!("device found!"),
+      DeviceMode::Fastboot => {
+        tracing::error!(
+          "device is already running mainline u-boot's fastboot gadget - use the fastboot flasher instead, or power \
+           the car thing on while holding buttons 1 & 4 to reach the mask rom"
+        );
+        return Err(Error::WrongMode);
+      }
       DeviceMode::Normal => {
         tracing::error!(
           "device is booted in normal mode. make sure to power on the car thing while holding buttons 1 & 4"
@@ -71,7 +77,7 @@ impl<U: UsbTransport> AmlogicSoC<U> {
       }
     };
 
-    transport.acquire().await?;
+    transport.acquire(UsbTarget::Maskrom).await?;
 
     let device = Self {
       inner: Arc::new(AmlInner { transport, callback }),
@@ -82,6 +88,18 @@ impl<U: UsbTransport> AmlogicSoC<U> {
     }
 
     Ok(device)
+  }
+
+  /// Wrap an already-claimed transport without probing or acquiring it
+  pub fn adopt(transport: U, callback: Option<Callback>) -> Self {
+    Self {
+      inner: Arc::new(AmlInner { transport, callback }),
+    }
+  }
+
+  /// The USB backend this device is driven through
+  pub fn transport(&self) -> &U {
+    &self.inner.transport
   }
 
   fn emit(&self, event: Event) {
@@ -734,6 +752,23 @@ impl<U: UsbTransport> AmlogicSoC<U> {
   /// - `Result<()>`: Success or an error
   #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
   pub async fn bl2_boot(&self, bl2: &[u8], bootloader: &[u8]) -> Result<()> {
+    self.bl2_stream(bl2, bootloader).await?;
+
+    self.emit(Event::Resetting);
+    tracing::debug!("device successfully moved to usb burn mode, sleeping then grabbing new handle");
+    sleep(RESET_SETTLE).await;
+    self.inner.transport.acquire(UsbTarget::Maskrom).await?;
+
+    Ok(())
+  }
+
+  /// RAM-boot a bootloader through BL2 without reclaiming the device afterwards
+  ///
+  /// # Parameters
+  /// - `bl2`: BL2 binary data
+  /// - `bootloader`: bootloader binary streamed over the AMLC handshake
+  #[cfg_attr(feature = "instrument", tracing::instrument(level = "trace", skip_all))]
+  pub async fn bl2_stream(&self, bl2: &[u8], bootloader: &[u8]) -> Result<()> {
     self.emit(Event::Bl2Boot);
 
     tracing::info!("sending bl2 binary to address {:#X}...", ADDR_BL2);
@@ -808,12 +843,6 @@ impl<U: UsbTransport> AmlogicSoC<U> {
     }
 
     tracing::info!("bl2 boot sequence completed successfully!");
-
-    self.emit(Event::Resetting);
-    tracing::debug!("device successfully moved to usb burn mode, sleeping then grabbing new handle");
-    sleep(Duration::from_millis(5000)).await;
-    self.inner.transport.acquire().await?;
-
     Ok(())
   }
 
@@ -1461,6 +1490,8 @@ pub enum DeviceMode {
   Usb,
   /// USB Burn mode (ready for flashing operations)
   UsbBurn,
+  /// Running mainline u-boot's fastboot gadget
+  Fastboot,
   /// Device not detected
   NotFound,
 }

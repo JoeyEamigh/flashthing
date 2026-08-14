@@ -12,18 +12,23 @@ use rusb::{Context, DeviceHandle, Direction, UsbContext};
 use zip::ZipArchive;
 
 use crate::{
-  Callback, DeviceMode, Error, Event, PRODUCT_ID, PRODUCT_ID_NORMAL, Result, VENDOR_ID, VENDOR_ID_NORMAL,
+  Callback, DeviceMode, Error, Event, PRODUCT_ID, PRODUCT_ID_FASTBOOT, PRODUCT_ID_NORMAL, Result, VENDOR_ID,
+  VENDOR_ID_FASTBOOT, VENDOR_ID_NORMAL,
   payload::{BlockingSource, PayloadSource, PayloadStore},
   time,
-  usb::{COMMAND_TIMEOUT, UsbTransport},
+  usb::{COMMAND_TIMEOUT, UsbTarget, UsbTransport},
 };
 
-const INTERFACE_NUMBER: u8 = 0;
+const MASKROM_INTERFACE: u8 = 0;
+const FASTBOOT_CLASS: u8 = 0xff;
+const FASTBOOT_SUBCLASS: u8 = 0x42;
+const FASTBOOT_PROTOCOL: u8 = 0x03;
 
 pub type Zip = ZipArchive<BufReader<File>>;
 
 struct Claimed {
   handle: DeviceHandle<Context>,
+  interface: u8,
   endpoint_in: u8,
   endpoint_out: u8,
 }
@@ -50,12 +55,13 @@ impl NativeUsb {
     op(claimed)
   }
 
-  fn open_once(&self) -> Result<Claimed> {
-    tracing::debug!("connecting to Amlogic device");
+  fn open_once(&self, target: UsbTarget) -> Result<Claimed> {
+    tracing::debug!("connecting to device as {:?}", target);
     if let Some(callback) = &self.callback {
       callback(Event::Connecting);
     };
 
+    let (vendor_id, product_id) = target.ids();
     let context = Context::new()?;
     let handle = {
       let device = context
@@ -63,7 +69,7 @@ impl NativeUsb {
         .iter()
         .find(|device| {
           if let Ok(desc) = device.device_descriptor() {
-            desc.vendor_id() == VENDOR_ID && desc.product_id() == PRODUCT_ID
+            desc.vendor_id() == vendor_id && desc.product_id() == product_id
           } else {
             false
           }
@@ -73,35 +79,43 @@ impl NativeUsb {
     };
 
     handle.set_active_configuration(1)?;
-    handle.claim_interface(INTERFACE_NUMBER)?;
 
     let device = handle.device();
     let config_desc = device.active_config_descriptor()?;
-    let interface = config_desc
+    let (interface, endpoint_in, endpoint_out) = config_desc
       .interfaces()
-      .find(|i| i.number() == INTERFACE_NUMBER)
-      .ok_or_else(|| Error::InvalidOperation("Interface not found".into()))?;
-    let descriptor = interface
-      .descriptors()
-      .next()
-      .ok_or_else(|| Error::InvalidOperation("No alt setting".into()))?;
-    let mut endpoint_in = None;
-    let mut endpoint_out = None;
-    for ep in descriptor.endpoint_descriptors() {
-      match ep.direction() {
-        Direction::In => endpoint_in = Some(ep.address()),
-        Direction::Out => endpoint_out = Some(ep.address()),
-      }
-    }
-    let endpoint_in = endpoint_in.ok_or_else(|| Error::InvalidOperation("IN endpoint not found".into()))?;
-    let endpoint_out = endpoint_out.ok_or_else(|| Error::InvalidOperation("OUT endpoint not found".into()))?;
-    tracing::info!("device connected, claiming interface {}", INTERFACE_NUMBER);
+      .flat_map(|interface| interface.descriptors())
+      .filter(|descriptor| match target {
+        UsbTarget::Maskrom => descriptor.interface_number() == MASKROM_INTERFACE,
+        UsbTarget::Fastboot => {
+          descriptor.class_code() == FASTBOOT_CLASS
+            && descriptor.sub_class_code() == FASTBOOT_SUBCLASS
+            && descriptor.protocol_code() == FASTBOOT_PROTOCOL
+        }
+      })
+      .find_map(|descriptor| {
+        let mut endpoint_in = None;
+        let mut endpoint_out = None;
+        for endpoint in descriptor.endpoint_descriptors() {
+          match endpoint.direction() {
+            Direction::In => endpoint_in = endpoint_in.or(Some(endpoint.address())),
+            Direction::Out => endpoint_out = endpoint_out.or(Some(endpoint.address())),
+          }
+        }
+        Some((descriptor.interface_number(), endpoint_in?, endpoint_out?))
+      })
+      .ok_or_else(|| Error::InvalidOperation(format!("no usable {:?} interface on this device", target)))?;
+
+    handle.claim_interface(interface)?;
+
+    tracing::info!("device connected, claiming interface {}", interface);
     if let Some(callback) = &self.callback {
       callback(Event::Connected);
     };
 
     Ok(Claimed {
       handle,
+      interface,
       endpoint_in,
       endpoint_out,
     })
@@ -111,7 +125,7 @@ impl NativeUsb {
     let claimed = self.claimed.lock().expect("usb handle mutex poisoned").take();
     let Some(claimed) = claimed else { return };
 
-    match claimed.handle.release_interface(INTERFACE_NUMBER) {
+    match claimed.handle.release_interface(claimed.interface) {
       Ok(()) => tracing::trace!("successfully dropped usb interface"),
       Err(err) => tracing::warn!("failed to release usb interface: {:?}", err),
     }
@@ -145,12 +159,12 @@ impl UsbTransport for NativeUsb {
     find_device()
   }
 
-  async fn acquire(&self) -> Result<()> {
+  async fn acquire(&self, target: UsbTarget) -> Result<()> {
     self.release();
 
     let mut attempts = 0;
     while attempts < 3 {
-      match self.open_once() {
+      match self.open_once(target) {
         Ok(claimed) => {
           *self.claimed.lock().expect("usb handle mutex poisoned") = Some(claimed);
           return Ok(());
@@ -163,7 +177,7 @@ impl UsbTransport for NativeUsb {
       }
     }
 
-    let claimed = self.open_once()?;
+    let claimed = self.open_once(target)?;
     *self.claimed.lock().expect("usb handle mutex poisoned") = Some(claimed);
     Ok(())
   }
@@ -193,6 +207,10 @@ fn find_device() -> DeviceMode {
     if desc.vendor_id() == VENDOR_ID_NORMAL && desc.product_id() == PRODUCT_ID_NORMAL {
       tracing::debug!("Found device booted normally, with USB Gadget (adb/usbnet) enabled");
       return DeviceMode::Normal;
+    }
+    if desc.vendor_id() == VENDOR_ID_FASTBOOT && desc.product_id() == PRODUCT_ID_FASTBOOT {
+      tracing::debug!("Found device running mainline u-boot's fastboot gadget");
+      return DeviceMode::Fastboot;
     }
     if desc.vendor_id() == VENDOR_ID && desc.product_id() == PRODUCT_ID {
       match device.open() {

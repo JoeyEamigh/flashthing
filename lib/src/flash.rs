@@ -530,7 +530,7 @@ impl Flasher<crate::native::NativeUsb, crate::native::FlashMode> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn open_zip(path: &std::path::Path) -> Result<crate::native::Zip> {
+pub(crate) fn open_zip(path: &std::path::Path) -> Result<crate::native::Zip> {
   if !path.exists() || !path.is_file() {
     return Err(Error::NotFound);
   }
@@ -539,7 +539,7 @@ fn open_zip(path: &std::path::Path) -> Result<crate::native::Zip> {
   Ok(zip::ZipArchive::new(reader)?)
 }
 
-async fn read_payload<S: PayloadStore>(data_or_file: &DataOrFile, store: &mut S) -> Result<Vec<u8>> {
+pub(crate) async fn read_payload<S: PayloadStore>(data_or_file: &DataOrFile, store: &mut S) -> Result<Vec<u8>> {
   tracing::debug!("handling data or file {:?}", data_or_file);
   match data_or_file {
     DataOrFile::Data(data) => Ok(data.to_owned()),
@@ -547,7 +547,7 @@ async fn read_payload<S: PayloadStore>(data_or_file: &DataOrFile, store: &mut S)
   }
 }
 
-async fn read_text<S: PayloadStore>(string_or_file: &StringOrFile, store: &mut S) -> Result<String> {
+pub(crate) async fn read_text<S: PayloadStore>(string_or_file: &StringOrFile, store: &mut S) -> Result<String> {
   tracing::debug!("handling string or file {:?}", string_or_file);
   match string_or_file {
     StringOrFile::String(data) => Ok(data.clone()),
@@ -555,7 +555,7 @@ async fn read_text<S: PayloadStore>(string_or_file: &StringOrFile, store: &mut S
   }
 }
 
-async fn open_payload<'a, S: PayloadStore>(
+pub(crate) async fn open_payload<'a, S: PayloadStore>(
   data_or_file: &'a DataOrFile,
   store: &'a mut S,
 ) -> Result<(usize, Box<dyn PayloadSource + 'a>)> {
